@@ -23,9 +23,13 @@ import kotlin.math.roundToInt
  */
 object PageRenderer {
   /** The whole recipe */
-  fun render(src: Bitmap, r: PageRecipe): Bitmap {
+  /**
+   * [maxSide]: the page's longer side once straightened from its corners (the source may be
+   * decoded larger only as the warp's input; the looks then never run on more than the target).
+   */
+  fun render(src: Bitmap, r: PageRecipe, maxSide: Int? = null): Bitmap {
     if (r.isPlain) return src
-    return finish(geometry(src, r), r)
+    return finish(geometry(src, r, maxSide = maxSide), r)
   }
 
   /**
@@ -33,9 +37,11 @@ object PageRenderer {
    * unless [beautyPixels] is false: the "before" view), its border trim, upside-down turn and
    * text straightening. This is what the crop box is drawn on.
    */
-  fun geometry(src: Bitmap, r: PageRecipe, beautyPixels: Boolean = true): Bitmap {
+  fun geometry(src: Bitmap, r: PageRecipe, beautyPixels: Boolean = true, maxSide: Int? = null): Bitmap {
     // (the straightened page keeps the source's detail: no 2400 px cap)
-    var b = DocTools.straighten(src, r.quad?.toFloatArray(), r.turn, maxOf(src.width, src.height))
+    var b = DocTools.straighten(src, r.quad?.toFloatArray(), r.turn, maxSide ?: maxOf(src.width, src.height))
+    // (no corners: a page decoded larger than the target is brought down before the looks run)
+    if (maxSide != null) b = DocTools.scaleToMax(b, maxSide)
     if (abs(r.rotate) >= 0.05f) b = rotateFine(b, r.rotate)
     val bt = r.beautify
     if (bt != null) {

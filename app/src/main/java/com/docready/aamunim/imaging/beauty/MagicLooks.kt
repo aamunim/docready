@@ -41,9 +41,11 @@ object MagicLooks {
     val boxes = protect + photoAreas(p, bg)
     val feather = max(8, max(p.w, p.h) / 60)
     val c3 = FloatArray(3)
-    // a protected area keeps its own light: only the paper's tint is balanced (a photo's paper
-    // estimate would be the photo itself)
+    // a protected area keeps its own tones: the paper's tint balanced, and lifted by how much
+    // darker the paper just around it is than the page's paper (a photo under a shadow does not sit
+    // on a grey island); a photo's own paper estimate would be the photo itself
     val paper = bg.paper
+    val gains = boxGains(p, bg, local, boxes, feather)
     for (y in 0 until p.h) for (x in 0 until p.w) {
       val i = y * p.w + x
       val c = p.data[i]
@@ -51,11 +53,12 @@ object MagicLooks {
       val nr = Px.r(c) / max(1f, c3[0])
       val ng = Px.g(c) / max(1f, c3[1])
       val nb = Px.b(c) / max(1f, c3[2])
-      val wp = protectWeight(boxes, x, y, feather)
-      // what a protected area gets: the colours with the paper's tint balanced
-      val er = Px.r(c) / max(1f, paper[0]) * 255f
-      val eg = Px.g(c) / max(1f, paper[1]) * 255f
-      val eb = Px.b(c) / max(1f, paper[2]) * 255f
+      val (wp, box) = protectWeight(boxes, x, y, feather)
+      // what a protected area gets: the colours with the paper's tint balanced and its light evened
+      val gain = if (box >= 0) gains[box] else 1f
+      val er = Px.r(c) / max(1f, paper[0]) * 255f * gain
+      val eg = Px.g(c) / max(1f, paper[1]) * 255f * gain
+      val eb = Px.b(c) / max(1f, paper[2]) * 255f * gain
       var mr = er
       var mg = eg
       var mb = eb
@@ -91,65 +94,100 @@ object MagicLooks {
     BeautySteps.clarity(p, 0.45f, boxes, flatRange = 10)
   }
 
-  /** 1 inside a protected box, fading to 0 over [feather] pixels outside it */
-  private fun protectWeight(boxes: List<IBox>, x: Int, y: Int, feather: Int): Float {
+  /** 1 inside a protected box, fading to 0 over [feather] pixels outside it; and which box (-1: none) */
+  private fun protectWeight(boxes: List<IBox>, x: Int, y: Int, feather: Int): Pair<Float, Int> {
     var w = 0f
-    for (b in boxes) {
+    var which = -1
+    for ((k, b) in boxes.withIndex()) {
       val dx = max(0, max(b.left - x, x - (b.right - 1)))
       val dy = max(0, max(b.top - y, y - (b.bottom - 1)))
       val d = max(dx, dy)
       if (d >= feather) continue
       val v = 1f - Px.smoothstep(0f, feather.toFloat(), d.toFloat())
-      if (v > w) w = v
+      if (v > w) {
+        w = v
+        which = k
+      }
       if (w >= 1f) break
     }
-    return w
+    return w to which
   }
 
   /**
-   * Greyscale photos: on the page as it is, areas where most of it is mid-tone against the page's
-   * paper (neither paper nor ink) and textured (a photo's detail; a shadow or a fold is smooth, so
-   * it is still evened away). Their highlights and shades are kept.
+   * Each protected box's light gain: the page's paper over the paper just outside the box (sampled
+   * on a ring a feather away), clamped to 1-2.5 (only ever lifted, never by much).
    */
-  fun photoAreas(p: Px, bg: Background): List<IBox> {
+  private fun boxGains(p: Px, bg: Background, local: ByteArray, boxes: List<IBox>, feather: Int): FloatArray {
+    val pl = max(1f, (bg.paper[0] * 299 + bg.paper[1] * 587 + bg.paper[2] * 114) / 1000f)
+    val c3 = FloatArray(3)
+    return FloatArray(boxes.size) { k ->
+      val b = boxes[k]
+      var sum = 0f
+      var n = 0
+      fun take(x: Int, y: Int) {
+        if (x !in 0 until p.w || y !in 0 until p.h) return
+        val i = y * p.w + x
+        bg.at(x, y, local[i].toInt() and 255, c3)
+        sum += (c3[0] * 299 + c3[1] * 587 + c3[2] * 114) / 1000f
+        n++
+      }
+      val steps = 24
+      for (s in 0..steps) {
+        val x = b.left + (b.width * s) / steps
+        val y = b.top + (b.height * s) / steps
+        take(x, b.top - feather)
+        take(x, b.bottom - 1 + feather)
+        take(b.left - feather, y)
+        take(b.right - 1 + feather, y)
+      }
+      if (n == 0) 1f else (pl / max(1f, sum / n)).coerceIn(1f, 2.5f)
+    }
+  }
+
+  /**
+   * Greyscale photos: areas whose cells have a wide tonal spread (the brightest tenth far above the
+   * darkest, p90 − p10 > 35) with much of it in between (a continuous range of tones). Text is wide
+   * but two-toned (paper and ink, little between); shadowed or grainy paper is narrow — both are
+   * still cleaned.
+   */
+  fun photoAreas(p: Px, @Suppress("UNUSED_PARAMETER") bg: Background): List<IBox> {
     val cell = max(8, max(p.w, p.h) / 32)
     val gw = (p.w + cell - 1) / cell
     val gh = (p.h + cell - 1) / cell
-    val step = max(1, cell / 10)
-    val pl = max(1f, (bg.paper[0] * 299 + bg.paper[1] * 587 + bg.paper[2] * 114) / 1000f)
+    val step = max(1, cell / 12)
     val mask = BooleanArray(gw * gh)
+    val hist = IntArray(256)
     for (gy in 0 until gh) for (gx in 0 until gw) {
-      var mid = 0
+      hist.fill(0)
       var n = 0
-      var grad = 0L
-      var pairs = 0
-      fun isMid(l: Int) = l / pl in 0.2f..0.85f
       var y = gy * cell
-      while (y < kotlin.math.min(p.h - 1, (gy + 1) * cell)) {
+      while (y < kotlin.math.min(p.h, (gy + 1) * cell)) {
         var x = gx * cell
-        while (x < kotlin.math.min(p.w - 1, (gx + 1) * cell)) {
-          val i = y * p.w + x
-          val l = Px.lum(p.data[i])
+        while (x < kotlin.math.min(p.w, (gx + 1) * cell)) {
+          hist[Px.lum(p.data[y * p.w + x])]++
           n++
-          if (isMid(l)) {
-            mid++
-            // texture between mid-tones only (a letter's edge against shadowed paper is not texture)
-            val r = Px.lum(p.data[i + 1])
-            val d = Px.lum(p.data[i + p.w])
-            if (isMid(r)) {
-              grad += kotlin.math.abs(r - l)
-              pairs++
-            }
-            if (isMid(d)) {
-              grad += kotlin.math.abs(d - l)
-              pairs++
-            }
-          }
           x += step
         }
         y += step
       }
-      mask[gy * gw + gx] = n > 0 && mid > n * 0.5f && pairs > n * 0.6f && grad >= pairs * 5L
+      if (n < 16) continue
+      fun level(part: Float): Int {
+        var acc = 0
+        for (v in 0 until 256) {
+          acc += hist[v]
+          if (acc >= n * part) return v
+        }
+        return 255
+      }
+      val p10 = level(0.1f)
+      val p90 = level(0.9f)
+      val spread = p90 - p10
+      if (spread <= 35) continue
+      val lo = p10 + spread * 0.2f
+      val hi = p90 - spread * 0.2f
+      var between = 0
+      for (v in 0 until 256) if (v > lo && v < hi) between += hist[v]
+      mask[gy * gw + gx] = between > n * 0.35f
     }
     return blobs(mask, gw, gh)
       .filter { it.box.width >= 2 && it.box.height >= 2 }

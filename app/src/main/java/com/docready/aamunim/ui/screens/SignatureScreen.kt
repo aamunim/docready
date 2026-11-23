@@ -489,7 +489,7 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
         placeResult = withContext(Dispatchers.Default) {
           val edits = formRecipe
           val page = DocTools.mutable(
-            DocTools.scaleToMax(PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), if (edits.quad != null) 2600 else 2400), edits), 2400),
+            DocTools.scaleToMax(PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), if (edits.quad != null) 2600 else 2400), edits, 2400), 2400),
           )
           Canvas(page).drawBitmap(
             signature,

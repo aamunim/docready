@@ -270,6 +270,7 @@ class PageEditorState(
         if (made != null && my == renderVersion) {
           geometryImage = made.first
           preview = made.second
+          previewOf = r
           beforeBeautify = made.third
         }
       } catch (e: CancellationException) {
@@ -542,6 +543,9 @@ class PageEditorState(
     }
   }
 
+  /** The recipe the shown preview was made from */
+  private var previewOf: PageRecipe? = null
+
   // ---- the scanning animation while a page is cleaned (Beautify, Magic)
   var anim by mutableStateOf<ScanAnim?>(null)
     private set
@@ -558,7 +562,12 @@ class PageEditorState(
     if (anim == null) return
     renderJob?.join()
     val after = preview
-    anim = if (after != null) anim?.copy(after = after, done = true, label = label) else null
+    // (another edit came meanwhile: the preview is not this change's result — no tick on it)
+    if (after == null || previewOf != recipe) {
+      anim = null
+      return
+    }
+    anim = anim?.copy(after = after, done = true, label = label)
     delay(if (animate) 900 else 300)
     anim = null
   }

@@ -157,7 +157,7 @@ class PdfPage(
   fun rendered(context: Context, recipe: PageRecipe, maxSide: Int): Bitmap {
     // straightening from corners wants more detail than the page it gives
     val side = if (recipe.quad != null) maxOf(maxSide, 2600) else maxSide
-    return DocTools.scaleToMax(PageRenderer.render(loadSource(context, side), recipe), maxSide)
+    return DocTools.scaleToMax(PageRenderer.render(loadSource(context, side), recipe, maxSide), maxSide)
   }
 }
 

@@ -227,7 +227,7 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
   private fun prepared(p: Page): Bitmap = PdfTools.atBestSize { side ->
     // (straightening from corners takes a little more of the photo than the page it gives)
     val b = DocTools.load(ctx, Uri.fromFile(p.file), if (p.recipe.quad != null) side + 600 else side)
-    DocTools.scaleToMax(PageRenderer.render(b, p.recipe), side)
+    DocTools.scaleToMax(PageRenderer.render(b, p.recipe, side), side)
   }
 
   // ---- the shared page editor (all pages, starting at one)
