@@ -531,7 +531,7 @@ object DocTools {
       for (x in 0 until w) {
         val i = y * w + x
         if (lum(px[i]) < 128) {
-          px[i] = Color.argb(255, 12, 20, 60) // dark blue-black ink
+          px[i] = Color.argb(255, 20, 20, 20) // near-black ink
           if (x < x0) x0 = x
           if (y < y0) y0 = y
           if (x > x1) x1 = x
