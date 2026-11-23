@@ -35,6 +35,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -55,6 +56,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.docready.aamunim.data.FileNames
 import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.data.model.OutputFormat
+import com.docready.aamunim.data.model.PageRecipe
+import com.docready.aamunim.imaging.PageRenderer
+import com.docready.aamunim.ui.editor.EditorMode
+import com.docready.aamunim.ui.editor.EditorPage
+import com.docready.aamunim.ui.editor.PageEditorScreen
+import com.docready.aamunim.ui.editor.PageEditorState
 import com.docready.aamunim.data.model.PresetItem
 import com.docready.aamunim.data.model.bytesText
 import com.docready.aamunim.docReady
@@ -69,9 +76,6 @@ import com.docready.aamunim.ui.components.ChoiceChips
 import com.docready.aamunim.ui.components.DocTopBar
 import com.docready.aamunim.ui.components.ErrorText
 import com.docready.aamunim.ui.components.NumberField
-import com.docready.aamunim.ui.components.QuadBox
-import com.docready.aamunim.ui.components.fullQuad
-import com.docready.aamunim.ui.components.isFullQuad
 import com.docready.aamunim.ui.theme.DocReadyColors
 import com.docready.aamunim.ui.components.ResultCard
 import com.docready.aamunim.ui.components.SaveSheet
@@ -97,24 +101,17 @@ class FilesResult(
 )
 
 /**
- * A page to make ready: its picture file, the paper's corners on it (null = the whole
- * picture), a quarter-turn count in degrees, what to look at (blurry / dark), and whether its
- * corners were only guessed (a photo added as a page).
+ * A page to make ready: its picture file (never changed), its edits ([PageRecipe]: corners,
+ * crop, look, erasing...), what to look at (blurry / dark), and whether its corners were only
+ * guessed (a photo added as a page).
  */
 class Page(
   val file: File,
   val thumb: ImageBitmap?,
-  val quad: FloatArray? = null,
-  val turn: Int = 0,
+  val recipe: PageRecipe = PageRecipe.Document,
   val warning: String? = null,
   val checkCorners: Boolean = false,
 )
-
-enum class ColorMode(val key: String, val title: String) {
-  COLOR("color", "Colour"),
-  GRAY("gray", "Grey"),
-  BW("bw", "Black & white"),
-}
 
 class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : AndroidViewModel(app) {
   private val ctx: Application get() = getApplication()
@@ -124,8 +121,6 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
 
   val pages = mutableStateListOf<Page>()
   var format by mutableStateOf(if (item?.format == OutputFormat.JPG) OutputFormat.JPG else OutputFormat.PDF)
-  var colorMode by mutableStateOf(ColorMode.COLOR)
-  var enhance by mutableStateOf(true)
   var maxKbText by mutableStateOf(item?.maxKb?.toString() ?: "")
 
   /** The limits of a preset's document item, picked on this screen */
@@ -164,7 +159,9 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
             } else {
               null
             }
-            Page(f, pageThumb(f, quad, 0), quad, 0, qualityWarning(f), checkCorners = photos)
+            // new document pages: shadows removed, colour evened (and the paper's corners on a photo)
+            val recipe = PageRecipe.Document.copy(quad = quad?.toList())
+            Page(f, pageThumb(f, recipe), recipe, qualityWarning(f), checkCorners = photos)
           }
           pages.add(page)
         }
@@ -189,93 +186,52 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
     null
   }
 
-  /** The page as it will come out (straightened, turned), small, for the list */
-  private fun pageThumb(f: File, quad: FloatArray?, turn: Int): ImageBitmap? {
-    val b = DocTools.straighten(DocTools.load(ctx, Uri.fromFile(f), 800), quad, turn)
-    val small = DocTools.scaleToMax(b, 240)
-    return small.asImageBitmap()
+  /** The page as it will come out (its edits applied), small, for the list */
+  private fun pageThumb(f: File, recipe: PageRecipe): ImageBitmap? {
+    val b = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), 800), recipe)
+    return DocTools.scaleToMax(b, 240).asImageBitmap()
   }
 
-  /** A page ready to be cleaned: straightened from its corners, turned, A4 at 150 dpi at most */
+  /** A page made from its picture and its edits, A4 at 150 dpi at most */
   private fun prepared(p: Page): Bitmap {
-    val q = p.quad?.takeIf { DocTools.isConvex(it) }
-    val b = DocTools.load(ctx, Uri.fromFile(p.file), if (q != null) 2600 else PdfTools.PAGE_LONG_SIDE)
-    return DocTools.scaleToMax(DocTools.straighten(b, q, p.turn), PdfTools.PAGE_LONG_SIDE)
+    val big = p.recipe.quad != null
+    val b = DocTools.load(ctx, Uri.fromFile(p.file), if (big) 2600 else PdfTools.PAGE_LONG_SIDE)
+    return DocTools.scaleToMax(PageRenderer.render(b, p.recipe), PdfTools.PAGE_LONG_SIDE)
   }
 
-  // ---- the corners of one page, changed by hand
-  var editing by mutableStateOf<Int?>(null)
+  // ---- the shared page editor (all pages, starting at one)
+  var editor by mutableStateOf<PageEditorState?>(null)
     private set
-  var editImage by mutableStateOf<ImageBitmap?>(null)
-    private set
-  var editQuad by mutableStateOf(fullQuad())
-  var editTurn by mutableStateOf(0)
-    private set
-  private var editBitmap: Bitmap? = null
 
-  fun startEdit(index: Int) {
-    val p = pages.getOrNull(index) ?: return
+  fun openEditor(start: Int) {
+    val list = pages.toList()
+    if (list.isEmpty()) return
+    editor = PageEditorState(
+      viewModelScope,
+      list.mapIndexed { i, p -> EditorPage("Page ${i + 1}", p.recipe) { side -> DocTools.load(ctx, Uri.fromFile(p.file), side) } },
+      start,
+      EditorMode.DOCUMENT,
+      onDone = { recipes -> applyRecipes(list, recipes) },
+      onClose = { editor = null },
+    )
+  }
+
+  private fun applyRecipes(list: List<Page>, recipes: List<PageRecipe>) {
+    editor = null
+    val changed = list.indices.filter { list[it].recipe != recipes[it] }
+    if (changed.isEmpty()) return
+    result = null
     viewModelScope.launch {
+      busy = "Updating the pages…"
       try {
-        val b = withContext(Dispatchers.Default) { DocTools.load(ctx, Uri.fromFile(p.file), 1400) }
-        editBitmap?.recycle()
-        editBitmap = b
-        editImage = b.asImageBitmap()
-        editQuad = p.quad?.copyOf() ?: fullQuad()
-        editTurn = p.turn
-        editing = index
+        for (i in changed) {
+          val p = list[i]
+          val thumb = withContext(Dispatchers.Default) { pageThumb(p.file, recipes[i]) }
+          val at = pages.indexOf(p)
+          if (at >= 0) pages[at] = Page(p.file, thumb, recipes[i], p.warning, checkCorners = false)
+        }
       } catch (e: Throwable) {
-        error = messageOf(e, "The page could not be opened.")
-      }
-    }
-  }
-
-  fun wholePage() {
-    editQuad = fullQuad()
-  }
-
-  /** The paper's edges looked for on the page (when clear) */
-  fun findEdges() {
-    val b = editBitmap ?: return
-    viewModelScope.launch {
-      try {
-        val q = withContext(Dispatchers.Default) { DocTools.findPaper(b) }
-        if (q != null) editQuad = q else error = "No clear paper edges found: drag the corners by hand."
-      } catch (e: Throwable) {
-        error = messageOf(e, "The paper's edges could not be found: drag the corners by hand.")
-      }
-    }
-  }
-
-  fun turnPage() {
-    editTurn = (editTurn + 90) % 360
-  }
-
-  fun cancelEdit() {
-    editing = null
-    editImage = null
-    editBitmap = null // (the picture may still be drawn: Android frees it)
-  }
-
-  fun applyEdit() {
-    val i = editing ?: return
-    val p = pages.getOrNull(i) ?: return cancelEdit()
-    val q = editQuad.copyOf().takeIf { !isFullQuad(it) }
-    if (q != null && !DocTools.isConvex(q)) {
-      error = "The corners cross each other: put each one on its own corner of the paper."
-      return
-    }
-    val turn = editTurn
-    viewModelScope.launch {
-      busy = "Straightening the page…"
-      error = null
-      try {
-        val thumb = withContext(Dispatchers.Default) { pageThumb(p.file, q, turn) }
-        if (i in pages.indices && pages[i] === p) pages[i] = Page(p.file, thumb, q, turn, p.warning, checkCorners = false)
-        result = null
-        cancelEdit()
-      } catch (e: Throwable) {
-        error = messageOf(e, "The page could not be straightened.")
+        error = messageOf(e, "The pages could not be updated.")
       } finally {
         busy = null
       }
@@ -296,8 +252,6 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
     if (pages.isEmpty()) return
     val files = pages.toList()
     val asPdf = format == OutputFormat.PDF
-    val color = colorMode.key
-    val enh = enhance
     viewModelScope.launch {
       busy = if (asPdf) "Making the PDF…" else "Making the pictures…"
       error = null
@@ -307,7 +261,7 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
           if (asPdf) {
             // one page in memory at a time: cleaned, then kept as a file
             val cleaned = files.map { f ->
-              DocTools.keepPage(ctx, DocTools.clean(prepared(f), color, enh, true))
+              DocTools.keepPage(ctx, prepared(f))
             }
             val name = if (files.size == 1) "scan_1_page.pdf" else "scan_${files.size}_pages.pdf"
             val out = FileNames.outputFile(ctx, name)
@@ -323,7 +277,7 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
             var total = 0L
             var largest = 0L
             files.forEachIndexed { i, f ->
-              val b = DocTools.clean(prepared(f), color, enh, true)
+              val b = prepared(f)
               val fit = DocTools.fitPicture(b, maxBytes, false)
               val name = if (files.size == 1) "scan.jpg" else "scan_page-${i + 1}.jpg"
               val out = FileNames.outputFile(ctx, name)
@@ -379,6 +333,11 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
   val app = context.applicationContext as Application
   val vm: ScanViewModel = viewModel { ScanViewModel(app, presetId, itemIndex) }
   var saving by rememberSaveable { mutableStateOf(false) }
+  // the shared page editor takes the whole screen while it is open
+  vm.editor?.let {
+    PageEditorScreen(it)
+    return
+  }
   val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { res ->
     if (res.resultCode == Activity.RESULT_OK) {
       val uris = try {
@@ -411,7 +370,7 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
   Scaffold(
     topBar = { DocTopBar("Scan document", onBack, subtitle = vm.preset?.let { "Preset: ${it.name}" } ?: "Certificates, marksheets") },
     bottomBar = {
-      if (vm.pages.isNotEmpty() && vm.editing == null) {
+      if (vm.pages.isNotEmpty()) {
         BottomActions {
           if (vm.result == null) {
             Button(onClick = { vm.make() }, enabled = vm.busy == null, modifier = Modifier.weight(1f).height(52.dp)) {
@@ -457,8 +416,6 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
           Text("Use photos of papers")
         }
         if (vm.preset == null) PresetItemShortcut(ItemKind.DOCUMENT, { _, item -> vm.applyItem(item) }, onNewPreset)
-      } else if (vm.editing != null) {
-        PageCornerEditor(vm)
       } else if (result != null) {
         result.preview?.let {
           Surface(
@@ -476,12 +433,15 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
           Text(f.name + " · " + bytesText(f.file.length()), style = MaterialTheme.typography.bodySmall)
         }
       } else {
-        SectionLabel("${vm.pages.size} page${if (vm.pages.size == 1) "" else "s"} · tap a page to fix its corners or turn it")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          SectionLabel("${vm.pages.size} page${if (vm.pages.size == 1) "" else "s"} · tap a page to edit it", Modifier.weight(1f))
+          TextButton(onClick = { vm.openEditor(0) }, enabled = vm.busy == null) { Text("Edit all pages") }
+        }
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           vm.pages.forEachIndexed { i, p ->
             Column(Modifier.width(104.dp), horizontalAlignment = Alignment.CenterHorizontally) {
               Surface(
-                onClick = { vm.startEdit(i) },
+                onClick = { vm.openEditor(i) },
                 enabled = vm.busy == null,
                 shape = RoundedCornerShape(8.dp),
                 border = BorderStroke(
@@ -513,12 +473,12 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
           { if (it == OutputFormat.PDF) "One PDF" else "JPG pictures" },
           { vm.format = it },
         )
-        SectionLabel("Colour")
-        ChoiceChips(ColorMode.entries.toList(), vm.colorMode, { it.title }, { vm.colorMode = it })
-        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-          Text("Even out light and remove shadows", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-          Switch(checked = vm.enhance, onCheckedChange = { vm.enhance = it })
-        }
+        Text(
+          "Each page: shadows removed and colour evened. Tap a page to crop, straighten, change its look or erase marks.",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          modifier = Modifier.padding(top = 8.dp),
+        )
         if (vm.preset == null) PresetItemShortcut(ItemKind.DOCUMENT, { _, item -> vm.applyItem(item) }, onNewPreset)
         SectionLabel("Size limit")
         NumberField(
@@ -550,33 +510,3 @@ private fun PageNote(text: String) {
   )
 }
 
-/** One page with its four corners to drag, a quarter turn, and the paper's edges found again */
-@Composable
-private fun PageCornerEditor(vm: ScanViewModel) {
-  val image = vm.editImage ?: return
-  Text(
-    "Drag each corner onto a corner of the paper. The page is straightened to them.",
-    style = MaterialTheme.typography.bodyMedium,
-    color = MaterialTheme.colorScheme.onSurfaceVariant,
-  )
-  VSpace(8)
-  QuadBox(image, vm.editQuad, { vm.editQuad = it })
-  if (vm.editTurn != 0) {
-    Text("Turned ${vm.editTurn}° to the right", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
-  }
-  VSpace(8)
-  Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-    OutlinedButton(onClick = { vm.turnPage() }) {
-      Icon(AppIcons.Rotate, contentDescription = null, modifier = Modifier.size(18.dp))
-      Spacer(Modifier.width(6.dp))
-      Text("Turn")
-    }
-    OutlinedButton(onClick = { vm.findEdges() }) { Text("Find edges") }
-    OutlinedButton(onClick = { vm.wholePage() }) { Text("Whole page") }
-  }
-  VSpace(8)
-  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-    Button(onClick = { vm.applyEdit() }, enabled = vm.busy == null) { Text("Done") }
-    OutlinedButton(onClick = { vm.cancelEdit() }) { Text("Cancel") }
-  }
-}

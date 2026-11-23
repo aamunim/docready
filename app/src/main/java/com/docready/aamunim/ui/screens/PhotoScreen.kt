@@ -60,6 +60,12 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.docready.aamunim.data.FileNames
 import com.docready.aamunim.data.model.ItemKind
+import com.docready.aamunim.data.model.PageRecipe
+import com.docready.aamunim.imaging.PageRenderer
+import com.docready.aamunim.ui.editor.EditorMode
+import com.docready.aamunim.ui.editor.EditorPage
+import com.docready.aamunim.ui.editor.PageEditorScreen
+import com.docready.aamunim.ui.editor.PageEditorState
 import com.docready.aamunim.data.model.PresetItem
 import com.docready.aamunim.data.model.PhotoBackground
 import com.docready.aamunim.data.model.bytesText
@@ -286,11 +292,33 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
   private var maskFound = false
   private var version = 0
 
-  fun setSource(uri: Uri) = load { FileNames.copyIn(ctx, uri, "img") }
+  fun setSource(uri: Uri) = load({ FileNames.copyIn(ctx, uri, "img") }, PageRecipe.Plain)
 
-  fun setSourceFile(file: File) = load { file }
+  fun setSourceFile(file: File) = load({ file }, PageRecipe.Plain)
 
-  private fun load(fileOf: () -> File) {
+  // ---- the photo's own edits (crop, rotate, light, erase) in the shared page editor
+  private var sourceFile: File? = null
+  private var photoRecipe = PageRecipe.Plain
+  var editor by mutableStateOf<PageEditorState?>(null)
+    private set
+
+  fun openEditor() {
+    val f = sourceFile ?: return
+    editor = PageEditorState(
+      viewModelScope,
+      listOf(EditorPage("Photo", photoRecipe) { side -> DocTools.load(ctx, Uri.fromFile(f), side) }),
+      0,
+      EditorMode.PHOTO,
+      onDone = { done ->
+        editor = null
+        // the face is found again on the edited photo (the source itself is never changed)
+        if (done[0] != photoRecipe) load({ f }, done[0])
+      },
+      onClose = { editor = null },
+    )
+  }
+
+  private fun load(fileOf: () -> File, recipe: PageRecipe) {
     viewModelScope.launch {
       busy = "Finding the face…"
       error = null
@@ -299,7 +327,9 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
         lock.withLock {
           withContext(Dispatchers.Default) {
             val f = fileOf()
-            val b = DocTools.load(ctx, Uri.fromFile(f), 2000)
+            val b = DocTools.mutable(PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), 2000), recipe))
+            sourceFile = f
+            photoRecipe = recipe
             val notes = mutableListOf<String>()
             val (sharpness, brightness) = DocTools.quality(ctx, Uri.fromFile(f))
             if (sharpness < 60) notes.add("The photo looks blurry. A sharper photo gives a better result.")
@@ -446,6 +476,11 @@ fun messageOf(e: Throwable, fallback: String): String =
 fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}) {
   val app = LocalContext.current.applicationContext as Application
   val vm: PhotoViewModel = viewModel { PhotoViewModel(app, presetId, itemIndex) }
+  // the shared page editor takes the whole screen while it is open
+  vm.editor?.let {
+    PageEditorScreen(it)
+    return
+  }
   val source = rememberImageSource { vm.setSource(it) }
   var saving by rememberSaveable { mutableStateOf(false) }
   val intake by Intake.request.collectAsState()
@@ -540,6 +575,7 @@ private fun PhotoEditor(vm: PhotoViewModel, onNewPreset: () -> Unit) {
         VSpace(8)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
           OutlinedButton(onClick = { vm.startAdjust() }, enabled = vm.busy == null && shownSource != null) { Text("Adjust crop") }
+          TextButton(onClick = { vm.openEditor() }, enabled = vm.busy == null && shownSource != null) { Text("Edit photo") }
           if (vm.manual != null) {
             TextButton(onClick = { vm.useAutoCrop() }, enabled = vm.busy == null) { Text("Back to face crop") }
           }

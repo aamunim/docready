@@ -190,3 +190,30 @@ object EditorColors {
   val OnAccent = Color(0xFF0B3A1C)
   val Line = Color(0xFF3A3632)
 }
+
+/** The page editor's own dark theme (whatever the phone's setting): near-black, green accents */
+@Composable
+fun EditorTheme(content: @Composable () -> Unit) {
+  CompositionLocalProvider(LocalExtraColors provides DarkExtra) {
+    MaterialTheme(
+      colorScheme = DarkColors.copy(
+        primary = EditorColors.Accent,
+        onPrimary = EditorColors.OnAccent,
+        background = EditorColors.Background,
+        onBackground = EditorColors.Text,
+        surface = EditorColors.Panel,
+        onSurface = EditorColors.Text,
+        surfaceVariant = EditorColors.PanelHigh,
+        onSurfaceVariant = EditorColors.TextDim,
+        outline = EditorColors.Line,
+        surfaceContainer = EditorColors.Panel,
+        surfaceContainerLow = EditorColors.Panel,
+        surfaceContainerHigh = EditorColors.PanelHigh,
+        surfaceContainerHighest = EditorColors.PanelHigh,
+      ),
+      typography = AppTypography,
+      shapes = AppShapes,
+      content = content,
+    )
+  }
+}

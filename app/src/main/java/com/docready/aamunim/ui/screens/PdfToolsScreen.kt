@@ -43,6 +43,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -59,6 +60,12 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.docready.aamunim.data.FileNames
 import com.docready.aamunim.data.model.OutputFormat
+import com.docready.aamunim.data.model.PageRecipe
+import com.docready.aamunim.imaging.PageRenderer
+import com.docready.aamunim.ui.editor.EditorMode
+import com.docready.aamunim.ui.editor.EditorPage
+import com.docready.aamunim.ui.editor.PageEditorScreen
+import com.docready.aamunim.ui.editor.PageEditorState
 import com.docready.aamunim.data.model.bytesText
 import com.docready.aamunim.imaging.DocTools
 import com.docready.aamunim.imaging.PdfTools
@@ -126,6 +133,26 @@ class PdfPage(
       return f
     }
   }
+
+  /**
+   * The page's source at [maxSide] (blocking): a PDF page rendered from its PDF, a photo loaded
+   * from itself, else the kept page. Never changed: edits are applied to a copy.
+   */
+  fun loadSource(context: Context, maxSide: Int): Bitmap {
+    val src = source?.takeIf { it.exists() }
+    return when {
+      src != null && pdfPage >= 0 -> PdfTools.renderPage(src, pdfPage, maxSide)
+      src != null -> DocTools.load(context, Uri.fromFile(src), maxSide)
+      else -> DocTools.load(context, Uri.fromFile(file(context)), maxSide)
+    }
+  }
+
+  /** The page made from its source with [recipe], its longer side at most [maxSide] (blocking) */
+  fun rendered(context: Context, recipe: PageRecipe, maxSide: Int): Bitmap {
+    // straightening from corners wants more detail than the page it gives
+    val side = if (recipe.quad != null) maxOf(maxSide, 2600) else maxSide
+    return DocTools.scaleToMax(PageRenderer.render(loadSource(context, side), recipe), maxSide)
+  }
 }
 
 /** A small picture for the page lists (16-bit colour: 150 of them stay small) */
@@ -170,7 +197,58 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
   }
 
   /** Split by preset: the pages given out to a preset's items */
-  val split = SplitState(app, viewModelScope)
+  /** Each page's edits (the page editor), shared with Split by preset */
+  val recipes = mutableStateMapOf<PdfPage, PageRecipe>()
+
+  /** Small pictures of edited pages */
+  val thumbs = mutableStateMapOf<PdfPage, ImageBitmap>()
+
+  /** A page was edited by hand (compress then never hands back the untouched original) */
+  private var userEdited = false
+
+  val split = SplitState(app, viewModelScope, recipes, thumbs)
+
+  // ---- the shared page editor
+  var editor by mutableStateOf<PageEditorState?>(null)
+    private set
+
+  fun openEditor(start: Int) {
+    val list = pages.toList()
+    if (list.isEmpty()) return
+    editor = PageEditorState(
+      viewModelScope,
+      list.mapIndexed { i, p ->
+        EditorPage("Page ${i + 1} · ${p.from}", recipes[p] ?: PageRecipe.Plain) { side -> p.loadSource(ctx, side) }
+      },
+      start,
+      EditorMode.DOCUMENT,
+      onDone = { done -> applyRecipes(list, done) },
+      onClose = { editor = null },
+    )
+  }
+
+  private fun applyRecipes(list: List<PdfPage>, done: List<PageRecipe>) {
+    editor = null
+    val changed = list.indices.filter { (recipes[list[it]] ?: PageRecipe.Plain) != done[it] }.map { list[it] }
+    if (changed.isEmpty()) return
+    for (p in changed) recipes[p] = done[list.indexOf(p)]
+    userEdited = true
+    result = null
+    split.onRecipesChanged(changed)
+    viewModelScope.launch {
+      busy = "Updating the pages…"
+      try {
+        for (p in changed) {
+          val r = recipes[p] ?: continue
+          thumbs[p] = withContext(Dispatchers.Default) { listThumb(p.rendered(ctx, r, 400)) }
+        }
+      } catch (e: Throwable) {
+        error = messageOf(e, "The pages could not be updated.")
+      } finally {
+        busy = null
+      }
+    }
+  }
 
   /** Several pages came in by Share / Open with: offer to split them by preset */
   var suggestSplit by mutableStateOf(false)
@@ -203,7 +281,10 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
                 PdfTools.renderThumbs(f, PdfTools.PAGE_LIMIT, 200) { n, total, thumb ->
                   val shown = thumb.asImageBitmap()
                   withContext(Dispatchers.Main) {
-                    pages.add(PdfPage(shown, name, f.length() / maxOf(1, total), f, n))
+                    val page = PdfPage(shown, name, f.length() / maxOf(1, total), f, n)
+                    // new document pages: shadows removed, colour evened (changeable in the editor)
+                    recipes[page] = PageRecipe.Document
+                    pages.add(page)
                     busy = "Reading page ${n + 1} of ${minOf(total, PdfTools.PAGE_LIMIT)}…"
                   }
                 }
@@ -219,7 +300,9 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
               }
             } else {
               val shown = withContext(Dispatchers.Default) { listThumb(DocTools.load(ctx, Uri.fromFile(f), 400)) }
-              pages.add(PdfPage(shown, name, f.length(), f, -1))
+              val page = PdfPage(shown, name, f.length(), f, -1)
+              recipes[page] = PageRecipe.Document
+              pages.add(page)
               filesAdded++
               singlePdf = null
             }
@@ -266,6 +349,9 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
 
   fun clear() {
     pages.clear()
+    recipes.clear()
+    thumbs.clear()
+    userEdited = false
     notes.clear()
     firstName = null
     singlePdf = null
@@ -344,7 +430,8 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
     val actual = actualSize
     val before = pages.sumOf { it.sourceBytes }.takeIf { m == PdfMode.COMPRESS && it > 0 }
     // the PDF exactly as it was added (no page moved or removed): never made heavier
-    val original = singlePdf?.takeIf { m == PdfMode.COMPRESS && !pagesChanged }
+    val original = singlePdf?.takeIf { m == PdfMode.COMPRESS && !pagesChanged && !userEdited }
+    val edits = chosen.map { recipes[it] ?: PageRecipe.Plain }
     val base = FileNames.safeBase(firstName ?: "document")
     viewModelScope.launch {
       busy = "Making the PDF…"
@@ -370,7 +457,8 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
             } else {
               chosen.mapIndexed { i, p ->
                 withContext(Dispatchers.Main) { busy = "Preparing page ${i + 1} of ${chosen.size}…" }
-                p.file(ctx)
+                // the page made from its source with its edits, kept as a work file
+                DocTools.keepPage(ctx, p.rendered(ctx, edits[i], PdfTools.PAGE_LONG_SIDE))
               }
             }
             withContext(Dispatchers.Main) { busy = "Making the PDF…" }
@@ -425,6 +513,11 @@ fun PdfToolsScreen(onBack: () -> Unit, startMode: PdfMode = PdfMode.MERGE, onNew
   val context = LocalContext.current
   val app = context.applicationContext as Application
   val vm: PdfToolsViewModel = viewModel { PdfToolsViewModel(app, startMode) }
+  // the shared page editor takes the whole screen while it is open
+  vm.editor?.let {
+    PageEditorScreen(it)
+    return
+  }
   var saving by rememberSaveable { mutableStateOf(false) }
   var savingSplit by rememberSaveable { mutableStateOf(false) }
   val intake by Intake.request.collectAsState()
@@ -559,6 +652,7 @@ fun PdfToolsScreen(onBack: () -> Unit, startMode: PdfMode = PdfMode.MERGE, onNew
           outerBusy = vm.busy != null,
           onNewPreset = onNewPreset,
           onStartAgain = { vm.clear() },
+          onEdit = { vm.openEditor(it) },
         )
       } else if (vm.mode == PdfMode.ID_CARD) {
         IdCardTool(vm, startCardScan, { pickFront.launch("image/*") }, { pickBack.launch("image/*") })
@@ -600,7 +694,10 @@ private fun PagesTool(vm: PdfToolsViewModel, addFiles: () -> Unit) {
       Spacer(Modifier.width(6.dp))
       Text("Add PDF or photos")
     }
-    if (vm.pages.isNotEmpty()) OutlinedButton(onClick = { vm.clear() }, enabled = vm.busy == null) { Text("Clear") }
+    if (vm.pages.isNotEmpty()) {
+      OutlinedButton(onClick = { vm.openEditor(0) }, enabled = vm.busy == null) { Text("Edit pages") }
+      OutlinedButton(onClick = { vm.clear() }, enabled = vm.busy == null) { Text("Clear") }
+    }
   }
   if (vm.pages.isNotEmpty()) {
     SectionLabel("${vm.pages.size} page${if (vm.pages.size == 1) "" else "s"}")
@@ -612,7 +709,7 @@ private fun PagesTool(vm: PdfToolsViewModel, addFiles: () -> Unit) {
       ) {
         Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
           Box(Modifier.size(width = 48.dp, height = 64.dp), contentAlignment = Alignment.Center) {
-            p.thumb?.let { Image(it, contentDescription = "Page ${i + 1}", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()) }
+            (vm.thumbs[p] ?: p.thumb)?.let { Image(it, contentDescription = "Page ${i + 1}", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()) }
           }
           Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
             Text("Page ${i + 1}", style = MaterialTheme.typography.bodyLarge)
@@ -621,6 +718,7 @@ private fun PagesTool(vm: PdfToolsViewModel, addFiles: () -> Unit) {
           // (pages being added rely on the list's positions: no change meanwhile)
           IconButton(onClick = { vm.move(i, -1) }, enabled = vm.busy == null && i > 0) { Icon(AppIcons.Up, contentDescription = "Move up") }
           IconButton(onClick = { vm.move(i, 1) }, enabled = vm.busy == null && i < vm.pages.size - 1) { Icon(AppIcons.Down, contentDescription = "Move down") }
+          IconButton(onClick = { vm.openEditor(i) }, enabled = vm.busy == null) { Icon(AppIcons.Edit, contentDescription = "Edit page") }
           IconButton(onClick = { vm.remove(i) }, enabled = vm.busy == null) { Icon(AppIcons.Delete, contentDescription = "Remove page") }
         }
       }
