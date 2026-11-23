@@ -51,6 +51,7 @@ import com.docready.aamunim.data.model.Preset
 import com.docready.aamunim.data.model.PresetItem
 import com.docready.aamunim.data.model.label
 import com.docready.aamunim.data.model.summary
+import com.docready.aamunim.data.model.title
 import com.docready.aamunim.docReady
 import com.docready.aamunim.ui.components.AppIcons
 import com.docready.aamunim.ui.components.Badge
@@ -191,7 +192,7 @@ fun PresetDetailScreen(
               )
               Spacer(Modifier.width(12.dp))
               Column(Modifier.weight(1f)) {
-                Text(item.kind.label, fontWeight = FontWeight.SemiBold)
+                Text(item.title, fontWeight = FontWeight.SemiBold)
                 Text(item.summary(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
               }
               Button(onClick = { onMake(preset, i) }) { Text("Make") }
@@ -232,9 +233,10 @@ private class EditItem(item: PresetItem) {
   var maxKb by mutableStateOf(item.maxKb?.toString() ?: "")
   var format by mutableStateOf(item.format)
   var background by mutableStateOf(item.background ?: PhotoBackground.WHITE)
+  var name by mutableStateOf(item.name ?: "")
 
   /** As text, to be kept in the saved screen state */
-  fun toSaved(): ArrayList<String> = arrayListOf(kind.name, width, height, maxKb, format.name, background.name)
+  fun toSaved(): ArrayList<String> = arrayListOf(kind.name, width, height, maxKb, format.name, background.name, name)
 
   companion object {
     fun fromSaved(v: List<String>): EditItem = EditItem(PresetItem(ItemKind.valueOf(v[0]))).apply {
@@ -243,6 +245,7 @@ private class EditItem(item: PresetItem) {
       maxKb = v[3]
       format = OutputFormat.valueOf(v[4])
       background = PhotoBackground.valueOf(v[5])
+      name = v.getOrNull(6) ?: ""
     }
   }
 }
@@ -298,6 +301,7 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
         heightPx = if (e.kind == ItemKind.DOCUMENT) null else h,
         maxKb = kb,
         format = format,
+        name = e.name.trim().take(60).ifEmpty { null },
         background = if (e.kind == ItemKind.PHOTO) e.background else null,
       )
     }
@@ -340,6 +344,14 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
           }
         })
         VSpace(8)
+        OutlinedTextField(
+          value = e.name,
+          onValueChange = { e.name = it.take(60) },
+          label = { Text(if (e.kind == ItemKind.DOCUMENT) "Name (e.g. SSC certificate)" else "Name (optional)") },
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth(),
+        )
+        VSpace(8)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           if (e.kind != ItemKind.DOCUMENT) {
             NumberField("Width px", e.width, { e.width = it }, Modifier.weight(1f))
@@ -363,10 +375,17 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
         }
       }
       VSpace(12)
-      OutlinedButton(
-        onClick = { items.add(EditItem(PresetItem(ItemKind.SIGNATURE, 300, 80, 60, OutputFormat.JPG))) },
-        modifier = Modifier.fillMaxWidth(),
-      ) { Text("+ Add a file") }
+      // a form's papers are mostly documents (certificates, NID...): one tap each
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(
+          onClick = { items.add(EditItem(PresetItem(ItemKind.DOCUMENT, null, null, 1024, OutputFormat.PDF))) },
+          modifier = Modifier.weight(1f),
+        ) { Text("+ Add a document") }
+        OutlinedButton(
+          onClick = { items.add(EditItem(PresetItem(ItemKind.SIGNATURE, 300, 80, 60, OutputFormat.JPG))) },
+          modifier = Modifier.weight(1f),
+        ) { Text("+ Photo / signature") }
+      }
       ErrorText(error)
       VSpace(12)
       Button(onClick = { save() }, modifier = Modifier.fillMaxWidth()) { Text("Save preset") }

@@ -36,6 +36,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -86,13 +87,23 @@ enum class PdfMode(val title: String) {
   MERGE("Merge & reorder"),
   COMPRESS("Compress"),
   ID_CARD("NID on one A4"),
+  SPLIT("Split by preset"),
 }
 
 /**
  * One page in the list: a PDF's page or a picture, kept as a JPEG work file.
  * [sourceBytes]: its share of the added file's weight (for "was ... → now ...").
  */
-class PdfPage(val file: File, val thumb: ImageBitmap?, val from: String, val sourceBytes: Long = 0L)
+class PdfPage(
+  val file: File,
+  val thumb: ImageBitmap?,
+  val from: String,
+  val sourceBytes: Long = 0L,
+  /** The file it came from (a PDF, or the photo itself), to render a part again in more detail */
+  val source: File? = null,
+  /** Its page number in [source] when that is a PDF; -1 = a photo */
+  val pdfPage: Int = -1,
+)
 
 class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
   private val ctx: Application get() = getApplication()
@@ -127,12 +138,18 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
     add(items.map { (u, mime, name) -> { FileNames.copyIn(ctx, u, if (mime == "application/pdf") "pdf" else "img") } to (mime to name) })
   }
 
+  /** Split by preset: the pages given out to a preset's items */
+  val split = SplitState(app, viewModelScope)
+
+  /** Several pages came in by Share / Open with: offer to split them by preset */
+  var suggestSplit by mutableStateOf(false)
+
   fun addIncoming(files: List<IncomingFile>) {
-    add(files.map { f -> { f.file } to (f.mime to f.name) })
+    add(files.map { f -> { f.file } to (f.mime to f.name) }, fromShare = true)
   }
 
   /** Each: how to get the file, (its kind, its name) */
-  private fun add(items: List<Pair<() -> File, Pair<String, String>>>) {
+  private fun add(items: List<Pair<() -> File, Pair<String, String>>>, fromShare: Boolean = false) {
     if (items.isEmpty()) return
     viewModelScope.launch {
       busy = "Opening the files…"
@@ -156,17 +173,18 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
               }
               singlePdf = if (filesAdded == 1 && r.total == r.pages.size) f else null
               val share = f.length() / maxOf(1, r.total)
-              r.pages.forEach { p -> out.add(PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), name, share)) }
+              r.pages.forEachIndexed { n, p -> out.add(PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), name, share, f, n)) }
             } else {
               singlePdf = null
               val b = DocTools.load(ctx, Uri.fromFile(f), PdfTools.PAGE_LONG_SIDE)
               val p = DocTools.keepPage(ctx, b)
-              out.add(PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), name, f.length()))
+              out.add(PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), name, f.length(), f, -1))
             }
           }
           out
         }
         pages.addAll(added)
+        if (fromShare && added.size > 1 && mode != PdfMode.SPLIT) suggestSplit = true
         if (mode == PdfMode.ID_CARD) {
           // pictures handed to the NID tool fill the empty sides
           for (p in added) {
@@ -190,12 +208,14 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
     pages.add(to, p)
     pagesChanged = true
     result = null
+    split.onPagesChanged(pages)
   }
 
   fun remove(index: Int) {
     if (index in pages.indices) pages.removeAt(index)
     pagesChanged = true
     result = null
+    split.onPagesChanged(pages)
   }
 
   fun clear() {
@@ -210,6 +230,7 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
     back = null
     result = null
     error = null
+    split.onPagesChanged(pages)
   }
 
   /** The scanner's two pictures: front, then back */
@@ -346,6 +367,7 @@ fun PdfToolsScreen(onBack: () -> Unit) {
   val app = context.applicationContext as Application
   val vm: PdfToolsViewModel = viewModel { PdfToolsViewModel(app) }
   var saving by rememberSaveable { mutableStateOf(false) }
+  var savingSplit by rememberSaveable { mutableStateOf(false) }
   val intake by Intake.request.collectAsState()
   LaunchedEffect(intake) {
     if (intake?.target == IntakeTarget.PDF_TOOLS) vm.addIncoming(Intake.take(IntakeTarget.PDF_TOOLS))
@@ -387,7 +409,11 @@ fun PdfToolsScreen(onBack: () -> Unit) {
   Scaffold(
     topBar = { DocTopBar("PDF tools", onBack, subtitle = "Merge, compress, NID") },
     bottomBar = {
-      val canMake = if (vm.mode == PdfMode.ID_CARD) vm.front != null && vm.back != null else vm.pages.isNotEmpty()
+      val canMake = when (vm.mode) {
+        PdfMode.ID_CARD -> vm.front != null && vm.back != null
+        PdfMode.SPLIT -> false // (its own "Make all")
+        else -> vm.pages.isNotEmpty()
+      }
       if (canMake) {
         BottomActions {
           if (vm.result == null) {
@@ -415,7 +441,31 @@ fun PdfToolsScreen(onBack: () -> Unit) {
         vm.mode = it
         vm.result = null
         vm.error = null
+        if (it == PdfMode.SPLIT) vm.suggestSplit = false
       })
+      if (vm.suggestSplit && vm.mode != PdfMode.SPLIT && vm.result == null) {
+        VSpace(10)
+        Surface(
+          shape = RoundedCornerShape(12.dp),
+          color = MaterialTheme.colorScheme.primaryContainer,
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          Column(Modifier.padding(12.dp)) {
+            Text(
+              "${vm.pages.size} pages came in. Are they different papers for one form?",
+              color = MaterialTheme.colorScheme.onPrimaryContainer,
+              style = MaterialTheme.typography.bodyMedium,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              TextButton(onClick = {
+                vm.mode = PdfMode.SPLIT
+                vm.suggestSplit = false
+              }) { Text("Split by preset") }
+              TextButton(onClick = { vm.suggestSplit = false }) { Text("No, one PDF") }
+            }
+          }
+        }
+      }
       val result = vm.result
       if (result != null) {
         VSpace(12)
@@ -429,6 +479,8 @@ fun PdfToolsScreen(onBack: () -> Unit) {
         VSpace(12)
         FilesResultCard(result)
         Text(result.files[0].name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+      } else if (vm.mode == PdfMode.SPLIT) {
+        SplitTool(vm.split, vm.pages, addFiles, { savingSplit = true }, outerBusy = vm.busy != null)
       } else if (vm.mode == PdfMode.ID_CARD) {
         IdCardTool(vm, startCardScan, { pickFront.launch("image/*") }, { pickBack.launch("image/*") })
       } else {
@@ -443,6 +495,11 @@ fun PdfToolsScreen(onBack: () -> Unit) {
   val r = vm.result
   if (saving && r != null) {
     SaveSheet(r.files, defaultFolder = "DocReady", onDismiss = { saving = false })
+  }
+  val splitFiles = vm.split.allFiles()
+  if (savingSplit && splitFiles.isNotEmpty()) {
+    // every item's file in one folder, named after the preset
+    SaveSheet(splitFiles, defaultFolder = vm.split.preset?.name ?: "DocReady", onDismiss = { savingSplit = false })
   }
 }
 
