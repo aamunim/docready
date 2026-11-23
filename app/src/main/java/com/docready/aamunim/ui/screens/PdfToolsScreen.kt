@@ -1,5 +1,13 @@
 package com.docready.aamunim.ui.screens
 
+import com.docready.aamunim.data.Draft
+import com.docready.aamunim.data.DraftCut
+import com.docready.aamunim.data.DraftHost
+import com.docready.aamunim.data.DraftPage
+import com.docready.aamunim.data.DraftRepository
+import com.docready.aamunim.data.model.title
+import com.docready.aamunim.ui.components.DraftOffer
+import com.docready.aamunim.ui.components.NormBox
 import com.docready.aamunim.docReady
 import kotlinx.coroutines.delay
 import com.docready.aamunim.ui.components.ScanAnimationCard
@@ -172,9 +180,11 @@ private fun listThumb(b: Bitmap): ImageBitmap {
 
 class PdfToolsViewModel(
   app: Application,
-  startMode: PdfMode = PdfMode.MERGE,
-  presetId: String? = null,
-  itemIndex: Int = -1,
+  private val startMode: PdfMode = PdfMode.MERGE,
+  private val presetId: String? = null,
+  private val itemIndex: Int = -1,
+  private val studentId: String? = null,
+  resume: Boolean = false,
 ) : AndroidViewModel(app) {
   /** A preset's document item this PDF is made for (from a student's checklist), or null */
   val preset = app.docReady.presets.get(presetId)
@@ -554,6 +564,87 @@ class PdfToolsViewModel(
       }
     }
   }
+
+  // ---- autosave: "Continue where you left off?" (PDF tools and Split by preset each keep one)
+  private val draftTool = if (startMode == PdfMode.SPLIT) "split" else "pdf"
+  private val draftTitle = listOfNotNull(
+    if (startMode == PdfMode.SPLIT) "Split by preset" else "PDF tools",
+    forItem?.title,
+    app.docReady.students.get(studentId)?.name?.let { "for $it" },
+  ).joinToString(" · ")
+
+  val draft = DraftHost(viewModelScope, app.docReady.drafts, DraftRepository.keyOf(draftTool, presetId, itemIndex, studentId), { snapshot() }) { d -> restore(d) }
+
+  private fun snapshot(): Draft? {
+    val list = pages.filter { it.source != null }
+    if (list.isEmpty()) return null
+    val splitPreset = split.preset
+    val title = if (draftTool == "split" && splitPreset != null) "$draftTitle · ${splitPreset.name}" else draftTitle
+    return Draft(
+      draft.key, draftTool, title, presetId, itemIndex, studentId,
+      list.map { p ->
+        DraftPage(
+          p.source!!.path,
+          pdfPage = p.pdfPage,
+          from = p.from,
+          sourceBytes = p.sourceBytes,
+          recipe = recipes[p] ?: PageRecipe.Plain,
+          item = split.assigned[p],
+        )
+      },
+      listOfNotNull(
+        "mode" to (if (mode == PdfMode.ID_CARD) PdfMode.MERGE else mode).name,
+        "maxKb" to maxKbText,
+        splitPreset?.let { "splitPreset" to it.id },
+        firstName?.let { "firstName" to it },
+      ).toMap(),
+      split.crops.map { (i, b) -> DraftCut(i, listOf(b.left, b.top, b.right, b.bottom)) },
+    )
+  }
+
+  private suspend fun restore(d: Draft) {
+    val v = d.values
+    v["mode"]?.let { m -> PdfMode.entries.firstOrNull { it.name == m }?.let { mode = it } }
+    v["maxKb"]?.let { maxKbText = it }
+    v["firstName"]?.let { if (firstName == null) firstName = it }
+    busy = "Opening your pages…"
+    try {
+      val back = mutableListOf<Pair<PdfPage, DraftPage>>()
+      for ((n, dp) in d.pages.withIndex()) {
+        if (d.pages.size > 3) busy = "Opening your pages (${n + 1} of ${d.pages.size})…"
+        val src = File(dp.file)
+        val page = withContext(Dispatchers.Default) {
+          val bare = PdfPage(null, dp.from, dp.sourceBytes, src, dp.pdfPage)
+          PdfPage(listThumb(bare.rendered(ctx, dp.recipe, 400)), dp.from, dp.sourceBytes, src, dp.pdfPage)
+        }
+        recipes[page] = dp.recipe
+        back.add(page to dp)
+      }
+      pages.addAll(0, back.map { it.first })
+      filesAdded += back.map { it.second.file }.distinct().size
+      singlePdf = null
+      result = null
+      val splitPreset = app().docReady.presets.get(v["splitPreset"])
+      split.restore(
+        splitPreset,
+        back.mapNotNull { (p, dp) -> dp.item?.let { p to it } }.toMap(),
+        d.cuts.filter { it.box.size == 4 }.associate { it.item to NormBox(it.box[0], it.box[1], it.box[2], it.box[3]) },
+        pages,
+      )
+      split.onPagesChanged(pages)
+    } catch (e: Throwable) {
+      error = messageOf(e, "The unfinished pages could not be opened.")
+    } finally {
+      busy = null
+    }
+  }
+
+  private fun app(): Application = getApplication()
+
+  init {
+    split.onSaved = { draft.done() }
+    draft.begin(resume)
+  }
 }
 
 @Composable
@@ -564,10 +655,11 @@ fun PdfToolsScreen(
   presetId: String? = null,
   itemIndex: Int = -1,
   studentId: String? = null,
+  resume: Boolean = false,
 ) {
   val context = LocalContext.current
   val app = context.applicationContext as Application
-  val vm: PdfToolsViewModel = viewModel { PdfToolsViewModel(app, startMode, presetId, itemIndex) }
+  val vm: PdfToolsViewModel = viewModel { PdfToolsViewModel(app, startMode, presetId, itemIndex, studentId, resume) }
   // the shared page editor takes the whole screen while it is open
   vm.editor?.let {
     PageEditorScreen(it)
@@ -615,6 +707,7 @@ fun PdfToolsScreen(
     }
   }
 
+  DraftOffer(vm.draft)
   Scaffold(
     topBar = {
       if (vm.mode == PdfMode.SPLIT) {
@@ -638,7 +731,10 @@ fun PdfToolsScreen(
           } else {
             OutlinedButton(onClick = { vm.result = null }, enabled = vm.busy == null, modifier = Modifier.height(52.dp)) { Text("Change") }
             if (studentId != null) {
-              AddToStudentButton(studentId, vm.result?.files?.takeIf { vm.busy == null }, vm.preset, Modifier.weight(1f), onBack)
+              AddToStudentButton(studentId, vm.result?.files?.takeIf { vm.busy == null }, vm.preset, Modifier.weight(1f)) {
+                vm.draft.done()
+                onBack()
+              }
             } else {
               Button(onClick = { saving = true }, enabled = vm.busy == null, modifier = Modifier.weight(1f).height(52.dp)) { Text("Save or share") }
             }
@@ -724,12 +820,12 @@ fun PdfToolsScreen(
 
   val r = vm.result
   if (saving && r != null) {
-    SaveSheet(r.files, defaultFolder = "DocReady", onDismiss = { saving = false })
+    SaveSheet(r.files, defaultFolder = "DocReady", onDismiss = { saving = false }, onSaved = { vm.draft.done() })
   }
   val splitFiles = vm.split.allFiles()
   if (savingSplit && splitFiles.isNotEmpty()) {
     // every item's file in one folder, named after the preset
-    SaveSheet(splitFiles, defaultFolder = vm.split.preset?.name ?: "DocReady", onDismiss = { savingSplit = false }, naming = presetNaming(vm.split.preset))
+    SaveSheet(splitFiles, defaultFolder = vm.split.preset?.name ?: "DocReady", onDismiss = { savingSplit = false }, naming = presetNaming(vm.split.preset), onSaved = { vm.draft.done() })
   }
 }
 

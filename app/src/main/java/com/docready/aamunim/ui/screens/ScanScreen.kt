@@ -59,6 +59,12 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.docready.aamunim.data.FileNames
+import com.docready.aamunim.data.Draft
+import com.docready.aamunim.data.DraftHost
+import com.docready.aamunim.data.DraftPage
+import com.docready.aamunim.data.DraftRepository
+import com.docready.aamunim.data.model.title
+import com.docready.aamunim.ui.components.DraftOffer
 import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.data.model.OutputFormat
 import com.docready.aamunim.data.model.PageRecipe
@@ -119,7 +125,7 @@ class Page(
   val checkCorners: Boolean = false,
 )
 
-class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : AndroidViewModel(app) {
+class ScanViewModel(app: Application, private val presetId: String?, private val itemIndex: Int, private val studentId: String? = null, resume: Boolean = false) : AndroidViewModel(app) {
   private val ctx: Application get() = getApplication()
   val preset = app.docReady.presets.get(presetId)
   private val item = preset?.items?.getOrNull(itemIndex)?.takeIf { it.kind == ItemKind.DOCUMENT }
@@ -344,6 +350,50 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
   fun clearResult() {
     result = null
   }
+
+  // ---- autosave: "Continue where you left off?"
+  private val draftTitle = listOfNotNull(
+    "Scan",
+    item?.title,
+    app.docReady.students.get(studentId)?.name?.let { "for $it" },
+  ).joinToString(" · ")
+
+  val draft = DraftHost(viewModelScope, app.docReady.drafts, DraftRepository.keyOf("scan", presetId, itemIndex, studentId), { snapshot() }) { d -> restore(d) }
+
+  private fun snapshot(): Draft? {
+    val list = pages.toList()
+    if (list.isEmpty()) return null
+    return Draft(
+      draft.key, "scan", draftTitle, presetId, itemIndex, studentId,
+      list.map { DraftPage(it.file.path, recipe = it.recipe, warning = it.warning, checkCorners = it.checkCorners) },
+      mapOf("format" to format.name, "maxKb" to maxKbText),
+    )
+  }
+
+  private suspend fun restore(d: Draft) {
+    d.values["format"]?.let { f -> OutputFormat.entries.firstOrNull { it.name == f }?.let { format = it } }
+    d.values["maxKb"]?.let { maxKbText = it }
+    busy = "Opening your pages…"
+    try {
+      val back = withContext(Dispatchers.Default) {
+        d.pages.map { p ->
+          val f = File(p.file)
+          Page(f, pageThumb(f, p.recipe), p.recipe, p.warning, p.checkCorners)
+        }
+      }
+      // (before any pages added meanwhile)
+      pages.addAll(0, back)
+      result = null
+    } catch (e: Throwable) {
+      error = messageOf(e, "The unfinished pages could not be opened.")
+    } finally {
+      busy = null
+    }
+  }
+
+  init {
+    draft.begin(resume)
+  }
 }
 
 /** The ready files' card: what was made and whether it is under the limit */
@@ -368,10 +418,10 @@ fun FilesResultCard(r: FilesResult) {
 }
 
 @Composable
-fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}, studentId: String? = null) {
+fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}, studentId: String? = null, resume: Boolean = false) {
   val context = LocalContext.current
   val app = context.applicationContext as Application
-  val vm: ScanViewModel = viewModel { ScanViewModel(app, presetId, itemIndex) }
+  val vm: ScanViewModel = viewModel { ScanViewModel(app, presetId, itemIndex, studentId, resume) }
   var saving by rememberSaveable { mutableStateOf(false) }
   // the shared page editor takes the whole screen while it is open
   vm.editor?.let {
@@ -407,6 +457,7 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
     }
   }
 
+  DraftOffer(vm.draft)
   Scaffold(
     topBar = { DocTopBar("Scan document", onBack, subtitle = vm.preset?.let { "Preset: ${it.name}" } ?: "Certificates, marksheets") },
     bottomBar = {
@@ -419,7 +470,10 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
           } else {
             OutlinedButton(onClick = { vm.clearResult() }, enabled = vm.busy == null, modifier = Modifier.height(52.dp)) { Text("Change") }
             if (studentId != null) {
-              AddToStudentButton(studentId, vm.result?.files?.takeIf { vm.busy == null }, vm.preset, Modifier.weight(1f), onBack)
+              AddToStudentButton(studentId, vm.result?.files?.takeIf { vm.busy == null }, vm.preset, Modifier.weight(1f)) {
+                vm.draft.done()
+                onBack()
+              }
             } else {
               Button(onClick = { saving = true }, enabled = vm.busy == null, modifier = Modifier.weight(1f).height(52.dp)) {
                 Text("Save or share")
@@ -543,7 +597,7 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
 
   val r = vm.result
   if (saving && r != null) {
-    SaveSheet(r.files, defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { saving = false }, naming = presetNaming(vm.preset))
+    SaveSheet(r.files, defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { saving = false }, naming = presetNaming(vm.preset), onSaved = { vm.draft.done() })
   }
 }
 

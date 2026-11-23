@@ -1,5 +1,12 @@
 package com.docready.aamunim.ui.screens
 
+import com.docready.aamunim.data.Draft
+import com.docready.aamunim.data.DraftHost
+import com.docready.aamunim.data.DraftPage
+import com.docready.aamunim.data.DraftRepository
+import com.docready.aamunim.data.model.title
+import com.docready.aamunim.ui.components.DraftOffer
+import kotlinx.coroutines.Job
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -130,7 +137,7 @@ fun ImageResultCard(r: ImageResult, fromPreset: Boolean) {
   }
 }
 
-class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : AndroidViewModel(app) {
+class PhotoViewModel(app: Application, private val presetId: String?, private val itemIndex: Int, private val studentId: String? = null, resume: Boolean = false) : AndroidViewModel(app) {
   private val ctx: Application get() = getApplication()
   val preset = app.docReady.presets.get(presetId)
   private val item = preset?.items?.getOrNull(itemIndex)?.takeIf { it.kind == ItemKind.PHOTO }
@@ -300,8 +307,8 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
   fun setSourceFile(file: File) = load({ file }, PageRecipe.Plain)
 
   // ---- the photo's own edits (crop, rotate, light, erase) in the shared page editor
-  private var sourceFile: File? = null
-  private var photoRecipe = PageRecipe.Plain
+  private var sourceFile by mutableStateOf<File?>(null)
+  private var photoRecipe by mutableStateOf(PageRecipe.Plain)
   var editor by mutableStateOf<PageEditorState?>(null)
     private set
 
@@ -321,7 +328,7 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
     )
   }
 
-  private fun load(fileOf: () -> File, recipe: PageRecipe) {
+  private fun load(fileOf: () -> File, recipe: PageRecipe): Job =
     viewModelScope.launch {
       busy = "Finding the face…"
       error = null
@@ -366,7 +373,6 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
         busy = null
       }
     }
-  }
 
   /** Faces: found once; when the finder could not run (still downloading), tried again next time */
   private fun findFacesIfNeeded(s: Bitmap) {
@@ -458,6 +464,55 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
       }
     }
   }
+
+  // ---- autosave: "Continue where you left off?"
+  private val draftTitle = listOfNotNull(
+    "Photo",
+    item?.title,
+    app.docReady.students.get(studentId)?.name?.let { "for $it" },
+  ).joinToString(" · ")
+
+  val draft = DraftHost(viewModelScope, app.docReady.drafts, DraftRepository.keyOf("photo", presetId, itemIndex, studentId), { snapshot() }) { d -> restore(d) }
+
+  private fun snapshot(): Draft? {
+    if (!hasSource) return null
+    val f = sourceFile ?: return null
+    val box = manual?.let { "${it.left},${it.top},${it.right},${it.bottom}" }
+    return Draft(
+      draft.key, "photo", draftTitle, presetId, itemIndex, studentId,
+      listOf(DraftPage(f.path, recipe = photoRecipe)),
+      listOfNotNull(
+        "width" to widthState,
+        "height" to heightState,
+        "maxKb" to maxKbState,
+        "background" to background.name,
+        "headSize" to headSize.toString(),
+        "enhance" to enhance.toString(),
+        box?.let { "box" to it },
+      ).toMap(),
+    )
+  }
+
+  private suspend fun restore(d: Draft) {
+    val p = d.pages.firstOrNull() ?: return
+    val v = d.values
+    v["width"]?.let { widthState = it }
+    v["height"]?.let { heightState = it }
+    v["maxKb"]?.let { maxKbState = it }
+    v["background"]?.let { b -> PhotoBackground.entries.firstOrNull { it.name == b }?.let { background = it } }
+    v["headSize"]?.toFloatOrNull()?.let { headSize = it }
+    v["enhance"]?.toBooleanStrictOrNull()?.let { enhance = it }
+    load({ File(p.file) }, p.recipe).join()
+    val box = v["box"]?.split(',')?.mapNotNull { it.toFloatOrNull() }?.takeIf { it.size == 4 }
+    if (box != null && hasSource) {
+      manual = NormBox(box[0], box[1], box[2], box[3])
+      process()
+    }
+  }
+
+  init {
+    draft.begin(resume)
+  }
 }
 
 /** Shown while the result on screen no longer matches what was changed */
@@ -476,9 +531,9 @@ fun messageOf(e: Throwable, fallback: String): String =
   if (e is OutOfMemoryError) "The picture is too big for this phone's memory." else e.message ?: fallback
 
 @Composable
-fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}, studentId: String? = null) {
+fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}, studentId: String? = null, resume: Boolean = false) {
   val app = LocalContext.current.applicationContext as Application
-  val vm: PhotoViewModel = viewModel { PhotoViewModel(app, presetId, itemIndex) }
+  val vm: PhotoViewModel = viewModel { PhotoViewModel(app, presetId, itemIndex, studentId, resume) }
   // the shared page editor takes the whole screen while it is open
   vm.editor?.let {
     PageEditorScreen(it)
@@ -491,6 +546,7 @@ fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPres
     if (intake?.target == IntakeTarget.PHOTO) Intake.take(IntakeTarget.PHOTO).firstOrNull()?.let { vm.setSourceFile(it.file) }
   }
 
+  DraftOffer(vm.draft)
   Scaffold(
     topBar = {
       DocTopBar("Photo", onBack, subtitle = vm.preset?.let { "Preset: ${it.name}" } ?: "Face crop, background, exact size")
@@ -501,7 +557,10 @@ fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPres
           OutlinedButton(onClick = source.takePhoto, modifier = Modifier.height(52.dp)) { Text("Retake") }
           if (studentId != null) {
             // made for a student: added to them (app storage + Downloads / DocReady / <name>)
-            AddToStudentButton(studentId, vm.result?.ready?.takeIf { !vm.stale && vm.busy == null }?.let { listOf(it) }, vm.preset, Modifier.weight(1f), onBack)
+            AddToStudentButton(studentId, vm.result?.ready?.takeIf { !vm.stale && vm.busy == null }?.let { listOf(it) }, vm.preset, Modifier.weight(1f)) {
+              vm.draft.done()
+              onBack()
+            }
           } else {
             Button(
               onClick = { saving = true },
@@ -542,7 +601,7 @@ fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPres
 
   val ready = vm.result?.ready
   if (saving && ready != null) {
-    SaveSheet(listOf(ready), defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { saving = false }, naming = presetNaming(vm.preset))
+    SaveSheet(listOf(ready), defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { saving = false }, naming = presetNaming(vm.preset), onSaved = { vm.draft.done() })
   }
 }
 

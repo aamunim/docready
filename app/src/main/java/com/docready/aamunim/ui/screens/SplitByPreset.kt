@@ -126,6 +126,23 @@ class SplitState(
   var error by mutableStateOf<String?>(null)
   var results by mutableStateOf<List<SplitItemResult>?>(null)
 
+  /** Called after the files were saved to a student (the draft is then finished) */
+  var onSaved: () -> Unit = {}
+
+  /** A draft brought back: its preset, each page's item and the cut parts */
+  fun restore(p: Preset?, given: Map<PdfPage, Int>, cuts: Map<Int, NormBox>, pages: List<PdfPage>) {
+    if (p == null) return
+    preset = p
+    target = 0
+    for ((page, i) in given) if (i in p.items.indices) assigned[page] = i
+    for ((i, box) in cuts) {
+      val first = pagesOf(i, pages).firstOrNull() ?: continue
+      crops[i] = box
+      cropPages[i] = first
+    }
+    results = null
+  }
+
   fun choosePreset(p: Preset) {
     if (preset?.id == p.id) return
     preset = p
@@ -691,6 +708,7 @@ private fun SaveToStudent(split: SplitState) {
         scope.launch {
           val r = app.students.attach(s.id, split.allFiles(), split.preset)
           busy = false
+          split.onSaved()
           android.widget.Toast.makeText(
             context,
             if (r is com.docready.aamunim.save.SaveOutcome.Failed) "Kept for ${s.name}; Downloads: ${r.message}" else "Saved to ${s.name}",

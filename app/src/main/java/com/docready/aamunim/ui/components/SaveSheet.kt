@@ -264,7 +264,7 @@ fun SaveSheet(
 
 /** One file of the size check: its name, size and pixels / pages, against its limit */
 @Composable
-private fun SizeRow(name: String, f: ReadyFile, facts: FileFacts?) {
+fun SizeRow(name: String, f: ReadyFile, facts: FileFacts?) {
   val extra = DocReadyColors.extra
   val bytes = facts?.bytes ?: f.file.length()
   val limit = f.maxKb?.let { it * 1024L }

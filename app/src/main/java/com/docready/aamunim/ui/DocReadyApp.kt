@@ -37,14 +37,14 @@ import com.docready.aamunim.ui.screens.StudentsScreen
 /** The screens' routes (Navigation Compose, string routes) */
 object Routes {
   const val HOME = "home"
-  const val PHOTO = "photo?preset={preset}&item={item}&student={student}"
+  const val PHOTO = "photo?preset={preset}&item={item}&student={student}&draft={draft}"
   const val SIGNATURE = "signature?preset={preset}&item={item}&student={student}"
-  const val SCAN = "scan?preset={preset}&item={item}&student={student}"
-  const val PDF = "pdf?preset={preset}&item={item}&student={student}"
+  const val SCAN = "scan?preset={preset}&item={item}&student={student}&draft={draft}"
+  const val PDF = "pdf?preset={preset}&item={item}&student={student}&draft={draft}"
   const val STUDENTS = "students"
   const val STUDENT = "student/{id}"
   const val STUDENT_EDIT = "student-edit/{id}"
-  const val SPLIT = "split"
+  const val SPLIT = "split?draft={draft}"
   const val PRESETS = "presets"
   const val PRESET = "preset/{id}"
   const val PRESET_EDIT = "preset-edit/{id}"
@@ -53,10 +53,11 @@ object Routes {
   const val FOLDER = "folder/{name}"
 
   /** A tool, optionally for a preset's item and a student (the result is added to them) */
-  fun tool(base: String, presetId: String? = null, item: Int = -1, student: String? = null): String {
+  fun tool(base: String, presetId: String? = null, item: Int = -1, student: String? = null, draft: Boolean = false): String {
     val args = listOfNotNull(
       presetId?.let { "preset=${Uri.encode(it)}&item=$item" },
       student?.let { "student=${Uri.encode(it)}" },
+      if (draft) "draft=1" else null,
     )
     return if (args.isEmpty()) base else base + "?" + args.joinToString("&")
   }
@@ -84,7 +85,17 @@ private val toolArgs = listOf(
     nullable = true
     defaultValue = null
   },
+  draftArg,
 )
+
+/** "1": opened from the Drafts list (the tool's draft is brought back without asking) */
+private val draftArg get() = navArgument("draft") {
+  type = NavType.StringType
+  nullable = true
+  defaultValue = null
+}
+
+private fun android.os.Bundle?.resume(): Boolean = this?.getString("draft") == "1"
 
 @Composable
 fun DocReadyApp() {
@@ -101,18 +112,22 @@ fun DocReadyApp() {
         onPhoto = { nav.navigate(Routes.tool("photo")) },
         onSignature = { nav.navigate(Routes.tool("signature")) },
         onPdfTools = { nav.navigate(Routes.tool("pdf")) },
-        onSplit = { nav.navigate(Routes.SPLIT) },
+        onSplit = { nav.navigate("split") },
         onPresets = { nav.navigate(Routes.PRESETS) },
         onNewPreset = { nav.navigate(Routes.presetEdit("new")) },
         onPreset = { nav.navigate(Routes.preset(it)) },
         onFolder = { nav.navigate(Routes.folder(it)) },
         onAccounts = { nav.navigate(Routes.ACCOUNTS) },
         onStudents = { nav.navigate(Routes.STUDENTS) },
+        onDraft = { d ->
+          // the tool brings its draft back at once ("scan", "pdf", "split" or "photo")
+          nav.navigate(Routes.tool(d.tool, d.presetId, d.itemIndex, d.studentId, draft = true))
+        },
       )
     }
     composable(Routes.PHOTO, arguments = toolArgs) { entry ->
       val args = entry.arguments
-      PhotoScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }, studentId = args?.getString("student"))
+      PhotoScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }, studentId = args?.getString("student"), resume = args.resume())
     }
     composable(Routes.SIGNATURE, arguments = toolArgs) { entry ->
       val args = entry.arguments
@@ -120,7 +135,7 @@ fun DocReadyApp() {
     }
     composable(Routes.SCAN, arguments = toolArgs) { entry ->
       val args = entry.arguments
-      ScanScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }, studentId = args?.getString("student"))
+      ScanScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }, studentId = args?.getString("student"), resume = args.resume())
     }
     composable(Routes.PDF, arguments = toolArgs) { entry ->
       val args = entry.arguments
@@ -130,6 +145,7 @@ fun DocReadyApp() {
         presetId = args?.getString("preset"),
         itemIndex = args?.getInt("item") ?: -1,
         studentId = args?.getString("student"),
+        resume = args.resume(),
       )
     }
     composable(Routes.STUDENTS) {
@@ -157,8 +173,8 @@ fun DocReadyApp() {
       })
     }
     // (a destination of its own: Share / Open with can land in it while PDF tools is open)
-    composable(Routes.SPLIT) {
-      PdfToolsScreen(back, startMode = PdfMode.SPLIT, onNewPreset = { nav.navigate(Routes.presetEdit("new")) })
+    composable(Routes.SPLIT, arguments = listOf(draftArg)) { entry ->
+      PdfToolsScreen(back, startMode = PdfMode.SPLIT, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }, resume = entry.arguments.resume())
     }
     composable(Routes.PRESETS) {
       PresetsScreen(
@@ -201,7 +217,7 @@ private fun IntakeHandler(nav: NavHostController) {
   LaunchedEffect(r) {
     when (r.target) {
       IntakeTarget.PDF_TOOLS -> nav.navigate(Routes.tool("pdf")) { launchSingleTop = true }
-      IntakeTarget.SPLIT -> nav.navigate(Routes.SPLIT) { launchSingleTop = true }
+      IntakeTarget.SPLIT -> nav.navigate("split") { launchSingleTop = true }
       IntakeTarget.PHOTO -> nav.navigate(Routes.tool("photo")) { launchSingleTop = true }
       IntakeTarget.SIGNATURE -> nav.navigate(Routes.tool("signature")) { launchSingleTop = true }
       null -> Unit

@@ -30,6 +30,15 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.material3.AlertDialog
+import com.docready.aamunim.data.Draft
+import com.docready.aamunim.data.summary
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +67,8 @@ fun HomeScreen(
   onPresets: () -> Unit,
   onNewPreset: () -> Unit,
   onStudents: () -> Unit = {},
+  onCheckSize: () -> Unit = {},
+  onDraft: (Draft) -> Unit = {},
   onPreset: (String) -> Unit,
   onFolder: (String) -> Unit,
   onAccounts: () -> Unit,
@@ -65,6 +76,11 @@ fun HomeScreen(
   val app = LocalContext.current.docReady
   val presets by app.presets.presets.collectAsState()
   val folders by app.folders.folders.collectAsState()
+  val drafts by app.drafts.drafts.collectAsState()
+  // (read once per visit; drafts older than 30 days are removed on the first read)
+  LaunchedEffect(Unit) { app.drafts.refresh() }
+  val scope = rememberCoroutineScope()
+  var deleting by remember { mutableStateOf<Draft?>(null) }
   Scaffold(
     topBar = {
       TopAppBar(
@@ -99,6 +115,16 @@ fun HomeScreen(
       Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         AccountPill(AppIcons.Drive, "Google Drive", Modifier.weight(1f), onAccounts)
         AccountPill(AppIcons.SignIn, "ITTC sign-in", Modifier.weight(1f), onAccounts)
+      }
+
+      if (drafts.isNotEmpty()) {
+        SectionLabel("Continue where you left off")
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          for (d in drafts.take(5)) DraftRow(d, onOpen = { onDraft(d) }, onDelete = { deleting = d })
+        }
+        if (drafts.size > 5) {
+          Text("${drafts.size - 5} more: open their tools to continue them.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
+        }
       }
 
       SectionLabel("Make it ready")
@@ -167,6 +193,20 @@ fun HomeScreen(
         }
       }
     }
+  }
+  deleting?.let { d ->
+    AlertDialog(
+      onDismissRequest = { deleting = null },
+      title = { Text("Delete this draft?") },
+      text = { Text("${d.title}\n${d.summary()}\n\nIts unfinished pages are thrown away. Files you already saved are not touched.") },
+      confirmButton = {
+        TextButton(onClick = {
+          deleting = null
+          scope.launch { app.drafts.discard(d.key) }
+        }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+      },
+      dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
+    )
   }
 }
 
@@ -292,6 +332,27 @@ private fun WideCard(icon: ImageVector, title: String, subtitle: String, onClick
         Text(title, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
         Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
       }
+    }
+  }
+}
+
+/** An unfinished piece of work: tap to continue it */
+@Composable
+private fun DraftRow(d: Draft, onOpen: () -> Unit, onDelete: () -> Unit) {
+  Surface(
+    onClick = onOpen,
+    shape = RoundedCornerShape(14.dp),
+    color = MaterialTheme.colorScheme.primaryContainer,
+    modifier = Modifier.fillMaxWidth(),
+  ) {
+    Row(Modifier.padding(start = 14.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+      Icon(AppIcons.Clock, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(22.dp))
+      Spacer(Modifier.width(12.dp))
+      Column(Modifier.weight(1f)) {
+        Text(d.title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onPrimaryContainer, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(d.summary(), fontSize = 12.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+      }
+      IconButton(onClick = onDelete) { Icon(AppIcons.Close, contentDescription = "Delete draft", tint = MaterialTheme.colorScheme.onPrimaryContainer) }
     }
   }
 }
