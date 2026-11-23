@@ -7,6 +7,9 @@ import com.docready.aamunim.data.DraftPage
 import com.docready.aamunim.data.DraftRepository
 import com.docready.aamunim.data.model.title
 import com.docready.aamunim.ui.components.DraftOffer
+import com.docready.aamunim.ui.components.DuplicateBadge
+import com.docready.aamunim.ui.components.Duplicates
+import com.docready.aamunim.ui.components.DuplicatesBar
 import com.docready.aamunim.ui.components.FactChips
 import com.docready.aamunim.ui.components.SearchableSwitch
 import com.docready.aamunim.imaging.Fact
@@ -250,7 +253,7 @@ class PdfToolsViewModel(
   /** A page was edited by hand (compress then never hands back the untouched original) */
   private var userEdited = false
 
-  val split = SplitState(app, viewModelScope, recipes, thumbs)
+  val split = SplitState(app, viewModelScope, recipes, thumbs) { pages.toList() }
 
   // ---- the shared page editor
   var editor by mutableStateOf<PageEditorState?>(null)
@@ -388,11 +391,19 @@ class PdfToolsViewModel(
     }
   }
 
+  /** Pages that look like an earlier page (the same paper added twice) */
+  val duplicates = Duplicates(viewModelScope, pages, { it.thumb }) {
+    pagesChanged = true
+    result = null
+    split.onPagesChanged(pages)
+  }
+
   fun move(index: Int, by: Int) {
     val to = index + by
     if (index !in pages.indices || to !in pages.indices) return
     val p = pages.removeAt(index)
     pages.add(to, p)
+    duplicates.forgetUndo()
     pagesChanged = true
     result = null
     split.onPagesChanged(pages)
@@ -400,6 +411,7 @@ class PdfToolsViewModel(
 
   fun remove(index: Int) {
     if (index in pages.indices) pages.removeAt(index)
+    duplicates.forgetUndo()
     pagesChanged = true
     result = null
     split.onPagesChanged(pages)
@@ -407,6 +419,7 @@ class PdfToolsViewModel(
 
   fun clear() {
     pages.clear()
+    duplicates.forgetUndo()
     recipes.clear()
     thumbs.clear()
     userEdited = false
@@ -848,6 +861,7 @@ fun PdfToolsScreen(
           onNewPreset = onNewPreset,
           onStartAgain = { vm.clear() },
           onEdit = { vm.openEditor(it) },
+          duplicates = vm.duplicates,
         )
       } else if (vm.mode == PdfMode.ID_CARD) {
         IdCardTool(vm, startCardScan, { pickFront.launch("image/*") }, { pickBack.launch("image/*") })
@@ -896,6 +910,8 @@ private fun PagesTool(vm: PdfToolsViewModel, addFiles: () -> Unit) {
   }
   if (vm.pages.isNotEmpty()) {
     SectionLabel("${vm.pages.size} page${if (vm.pages.size == 1) "" else "s"}")
+    DuplicatesBar(vm.duplicates, enabled = vm.busy == null)
+    val sameAs = vm.duplicates.sameAs
     vm.pages.forEachIndexed { i, p ->
       Surface(
         shape = RoundedCornerShape(12.dp),
@@ -910,6 +926,7 @@ private fun PagesTool(vm: PdfToolsViewModel, addFiles: () -> Unit) {
             Text("Page ${i + 1}", style = MaterialTheme.typography.bodyLarge)
             Text(p.from, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             vm.recipes[p]?.beautyBadge()?.let { BeautyBadge(it) }
+            sameAs.getOrNull(i)?.let { DuplicateBadge(it) }
           }
           // (pages being added rely on the list's positions: no change meanwhile)
           IconButton(onClick = { vm.move(i, -1) }, enabled = vm.busy == null && i > 0) { Icon(AppIcons.Up, contentDescription = "Move up") }

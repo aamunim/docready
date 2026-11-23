@@ -65,12 +65,23 @@ phone, with no sign-in:
   edits, in the app's files) a moment after each change; opening the tool again asks
   "Continue where you left off?". Home lists the drafts; a draft ends when its result is saved
   and is removed after 30 days untouched.
+- **Text (OCR)**, English, fully offline (ML Kit's bundled Latin model, inside the app): the page
+  editor's Text action shows a page's text to select, copy or share; "Searchable PDF" (Scan, PDF
+  tools) keeps each page's words as an invisible layer over the picture; pages made for a student
+  offer what they say ("Use as name: …?", roll, registration no., date of birth) as chips.
+- **Split suggestions**: each page gets a suggested item (a face → photo, a lone ink cluster →
+  signature, words matching an item's title, its Keywords or words learned from earlier pages →
+  that document), shown on the page with ✓ / ✕ and "Accept all suggestions"; nothing is given
+  without a tap. Learned words stay on the phone.
+- **Duplicate pages** (Scan, PDF tools, Split): a page that looks like an earlier one is marked
+  "Looks like page N"; "Remove duplicates" asks first and can be undone.
 - **Check size** (Home): any photo or PDF → KB, pages or pixels; give a KB limit and Fix to fit
   (optionally keeping the pixel size), then save or share.
 - **Share to / Open with DocReady**: photos and PDFs shared or opened from other apps open
   in PDF tools / Photo / Signature.
 
-Phase 1 is offline only: the app has **no internet permission** and no analytics.
+The app is offline only: it has **no internet permission** and no analytics. The text model
+is bundled (about 4 MB per CPU type in the APK; Play's per-device split delivers one).
 
 Colours: deep green (#1B6B3A; #8FD19E in dark mode) on warm neutral greys, amber for
 warnings; no blue anywhere in the interface (the "Light blue" photo background is an output

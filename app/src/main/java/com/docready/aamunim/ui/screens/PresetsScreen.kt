@@ -378,10 +378,11 @@ private class EditItem(item: PresetItem) {
   var name by mutableStateOf(item.name ?: "")
   var required by mutableStateOf(item.required)
   var pagesHint by mutableStateOf(item.pagesHint ?: "")
+  var keywords by mutableStateOf(item.keywords.joinToString(", "))
 
   /** As text, to be kept in the saved screen state */
   fun toSaved(): ArrayList<String> =
-    arrayListOf(kind.name, width, height, maxKb, format.name, background.name, name, required.toString(), pagesHint, id)
+    arrayListOf(kind.name, width, height, maxKb, format.name, background.name, name, required.toString(), pagesHint, id, keywords)
 
   companion object {
     fun fromSaved(v: List<String>): EditItem = EditItem(PresetItem(ItemKind.valueOf(v[0]))).apply {
@@ -394,6 +395,7 @@ private class EditItem(item: PresetItem) {
       required = v.getOrNull(7)?.toBooleanStrictOrNull() ?: true
       pagesHint = v.getOrNull(8) ?: ""
       id = v.getOrNull(9) ?: ""
+      keywords = v.getOrNull(10) ?: ""
     }
 
     fun newOf(kind: ItemKind): EditItem = EditItem(
@@ -463,6 +465,7 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
         required = e.required,
         pagesHint = if (e.kind == ItemKind.DOCUMENT) e.pagesHint.trim().take(20).ifEmpty { null } else null,
         id = e.id,
+        keywords = e.keywords.split(',').map { it.trim().take(30) }.filter { it.isNotEmpty() }.distinct().take(20),
       )
     }
     return Preset(existing?.id ?: PresetRepository.newId(), name.trim().take(60), built, namePattern = namePattern.trim().take(80).ifEmpty { null })
@@ -614,6 +617,18 @@ private fun ItemEditor(i: Int, e: EditItem, items: SnapshotStateList<EditItem>) 
             modifier = Modifier.weight(1f),
           )
         }
+      }
+      if (e.kind == ItemKind.DOCUMENT) {
+        VSpace(8)
+        OutlinedTextField(
+          value = e.keywords,
+          onValueChange = { e.keywords = it.take(300) },
+          label = { Text("Keywords (optional)") },
+          placeholder = { Text("secondary, SSC, marksheet") },
+          supportingText = { Text("Words on this paper, comma separated: Split by preset suggests pages that have them.") },
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth(),
+        )
       }
       VSpace(8)
       val formats = when (e.kind) {

@@ -159,6 +159,7 @@ object PresetCodec {
       pagesHint = if (item.kind == ItemKind.DOCUMENT) item.pagesHint?.let { clean(it, 20) }?.ifEmpty { null } else null,
       // (ids from the file are not trusted: an imported preset's items get their own)
       id = PresetRepository.newId(),
+      keywords = item.keywords.map { clean(it, 30) }.filter { it.isNotEmpty() }.distinct().take(20),
     )
   }
 

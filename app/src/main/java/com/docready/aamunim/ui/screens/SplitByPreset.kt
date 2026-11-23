@@ -63,10 +63,17 @@ import com.docready.aamunim.data.model.title
 import com.docready.aamunim.docReady
 import com.docready.aamunim.imaging.DocPhoto
 import com.docready.aamunim.imaging.DocTools
+import com.docready.aamunim.imaging.InkShape
+import com.docready.aamunim.imaging.Keywords
+import com.docready.aamunim.imaging.Ocr
+import kotlinx.coroutines.Job
 import com.docready.aamunim.imaging.PdfTools
 import com.docready.aamunim.imaging.SignatureTools
 import com.docready.aamunim.save.ReadyFile
 import com.docready.aamunim.ui.components.BeautyBadge
+import com.docready.aamunim.ui.components.DuplicateBadge
+import com.docready.aamunim.ui.components.Duplicates
+import com.docready.aamunim.ui.components.DuplicatesBar
 import com.docready.aamunim.ui.components.AppIcons
 import com.docready.aamunim.ui.components.BusyRow
 import com.docready.aamunim.ui.components.CropBox
@@ -106,6 +113,8 @@ class SplitState(
   private val recipes: Map<PdfPage, PageRecipe>,
   /** Small pictures of edited pages */
   val thumbs: Map<PdfPage, ImageBitmap>,
+  /** The pages now (for suggestions in the background) */
+  private val currentPages: () -> List<PdfPage> = { emptyList() },
 ) {
   var preset by mutableStateOf<Preset?>(null)
     private set
@@ -151,6 +160,9 @@ class SplitState(
     crops.clear()
     cropPages.clear()
     results = null
+    suggested.clear()
+    rejected.clear()
+    suggest()
   }
 
   fun toggle(page: PdfPage) {
@@ -169,7 +181,9 @@ class SplitState(
       // the page's old item may have lost the page its cut was drawn on
       assigned[page]?.let { if (it != target) dropCrop(it) }
       assigned[page] = target
+      suggested.remove(page)
     }
+    learn(selected.toList(), p.items[target])
     selected.clear()
     dropCrop(target) // the item's first page may have changed
     results = null
@@ -196,10 +210,131 @@ class SplitState(
     val present = pages.toSet()
     assigned.keys.filter { it !in present }.forEach { assigned.remove(it) }
     selected.removeAll { it !in present }
+    suggested.keys.filter { it !in present }.forEach { suggested.remove(it) }
     for (i in crops.keys.toList()) {
       if (cropPages[i] == null || pagesOf(i, pages).firstOrNull() !== cropPages[i]) dropCrop(i)
     }
     results = null
+    // new pages: looked at too (pages already looked at are not looked at again)
+    if (preset != null && pages.any { it !in looks && it !in assigned }) suggest()
+  }
+
+  // ---- suggestions: which item each page looks like (never given without a tap)
+  /** Each page's suggested item */
+  val suggested = mutableStateMapOf<PdfPage, Int>()
+
+  /** Items the user said a page is not (per page, for this preset) */
+  private val rejected = HashMap<PdfPage, MutableSet<Int>>()
+
+  /** "Looking at page 12 of 150…" while suggestions are being made */
+  var suggesting by mutableStateOf<String?>(null)
+    private set
+
+  /** What was seen on each page (read once, whatever the preset) */
+  private val looks = HashMap<PdfPage, PageLook>()
+  private var suggestJob: Job? = null
+
+  /**
+   * What a page shows: its words (OCR on a page about 1000 px), a face and how big, and the
+   * shape of its ink
+   */
+  private class PageLook(val tokens: Set<String>, val top: List<String>, val words: Int, val faceShare: Float, val ink: InkShape)
+
+  /**
+   * Suggestions made again for the pages not given yet, one page at a time (each shows as soon
+   * as it is ready); a new call replaces a running one; leaving the screen stops it.
+   */
+  fun suggest() {
+    suggestJob?.cancel()
+    val p = preset ?: return
+    suggestJob = scope.launch {
+      val pages = currentPages()
+      try {
+        for ((n, page) in pages.withIndex()) {
+          if (page in assigned) continue
+          val look = looks[page] ?: run {
+            suggesting = "Looking at page ${n + 1} of ${pages.size}…"
+            lookAt(page)?.also { looks[page] = it }
+          } ?: continue
+          val best = choose(look, p)
+          if (best != null && best !in (rejected[page] ?: emptySet<Int>()) && page !in assigned) suggested[page] = best else suggested.remove(page)
+        }
+      } finally {
+        suggesting = null
+      }
+    }
+  }
+
+  private suspend fun lookAt(page: PdfPage): PageLook? = try {
+    val b = withContext(Dispatchers.Default) { page.rendered(ctx, recipes[page] ?: PageRecipe.Plain, Ocr.QUICK_SIDE) }
+    val text = Ocr.read(b, Ocr.QUICK_SIDE)
+    withContext(Dispatchers.Default) {
+      val faceShare = try {
+        DocPhoto.faces(b).firstOrNull()?.let { it.box.width() * it.box.height() / (b.width.toFloat() * b.height) } ?: 0f
+      } catch (_: Exception) {
+        0f // (the face finder not ready: no photo suggestion)
+      }
+      val small = DocTools.scaleToMax(b, 300)
+      val px = IntArray(small.width * small.height)
+      small.getPixels(px, 0, small.width, 0, 0, small.width, small.height)
+      val all = text.text
+      PageLook(Keywords.tokens(all).toSet(), Keywords.top(all), text.words.size, faceShare, InkShape.of(px, small.width, small.height))
+    }
+  } catch (e: kotlinx.coroutines.CancellationException) {
+    throw e
+  } catch (_: Throwable) {
+    null
+  }
+
+  /**
+   * The item a page looks like: a face taking some of the page with little text → a photo item;
+   * mostly white with one small cluster of ink → a signature item; else the document item whose
+   * title, keywords and learned words match best (no suggestion on a tie or a weak match).
+   */
+  private fun choose(look: PageLook, p: Preset): Int? {
+    val items = p.items
+    if (look.faceShare >= 0.02f && look.words < 30) {
+      items.indexOfFirst { it.kind == ItemKind.PHOTO }.takeIf { it >= 0 }?.let { return it }
+    }
+    if (look.faceShare == 0f && look.ink.looksLikeSignature(look.words)) {
+      items.indexOfFirst { it.kind == ItemKind.SIGNATURE }.takeIf { it >= 0 }?.let { return it }
+    }
+    val scores = items.mapIndexedNotNull { i, it ->
+      if (it.kind != ItemKind.DOCUMENT) null else i to Keywords.score(look.tokens, it.title, it.keywords, learned.words(it.id))
+    }.sortedByDescending { it.second }
+    val best = scores.firstOrNull() ?: return null
+    if (best.second < 2) return null
+    if (scores.size > 1 && scores[1].second == best.second) return null
+    return best.first
+  }
+
+  fun accept(page: PdfPage) {
+    val i = suggested.remove(page) ?: return
+    val p = preset ?: return
+    assigned[page]?.let { if (it != i) dropCrop(it) }
+    assigned[page] = i
+    selected.remove(page)
+    dropCrop(i)
+    results = null
+    learn(listOf(page), p.items[i])
+  }
+
+  fun reject(page: PdfPage) {
+    val i = suggested.remove(page) ?: return
+    rejected.getOrPut(page) { mutableSetOf() }.add(i)
+  }
+
+  fun acceptAll(pages: List<PdfPage>) {
+    for (page in pages) if (page in suggested) accept(page)
+  }
+
+  private val learned = ctx.docReady.learned
+
+  /** The pages' words counted for the item (pages not looked at yet teach nothing) */
+  private fun learn(pages: List<PdfPage>, item: PresetItem) {
+    val words = pages.mapNotNull { looks[it]?.top }
+    if (words.isEmpty() || item.id.isEmpty()) return
+    scope.launch(Dispatchers.IO) { for (w in words) learned.learn(item.id, w) }
   }
 
   /** Pages edited in the page editor: a cut drawn on the old look / geometry no longer fits */
@@ -461,6 +596,7 @@ fun SplitTool(
   onNewPreset: () -> Unit = {},
   onStartAgain: () -> Unit = {},
   onEdit: (Int) -> Unit = {},
+  duplicates: Duplicates<PdfPage>? = null,
 ) {
   // nothing is started while pages are still being opened or made
   val idle = split.busy == null && !outerBusy
@@ -519,7 +655,7 @@ fun SplitTool(
   SectionLabel("1 · Choose the form's preset")
   if (presets.isEmpty()) {
     NoPresetsCard(onNewPreset)
-    SplitPages(split, pages, null, onEdit, idle)
+    SplitPages(split, pages, null, onEdit, idle, duplicates)
     return
   }
   Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -537,7 +673,7 @@ fun SplitTool(
   val preset = split.preset
   if (preset == null) {
     SplitHint("Choose a preset above, then give the pages below to its items.")
-    SplitPages(split, pages, null, onEdit, idle)
+    SplitPages(split, pages, null, onEdit, idle, duplicates)
     return
   }
 
@@ -564,7 +700,17 @@ fun SplitTool(
   }
 
   if (split.selected.isEmpty()) SplitHint("Tap pages below to select them.")
-  SplitPages(split, pages, preset, onEdit, idle)
+  // suggestions: shown on the pages, given only with ✓ (or all at once here)
+  split.suggesting?.let { BusyRow("Suggesting items · $it") }
+  val suggestions = pages.count { it in split.suggested }
+  if (suggestions > 0) {
+    OutlinedButton(onClick = { split.acceptAll(pages) }, enabled = idle, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
+      Icon(AppIcons.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+      Spacer(Modifier.width(6.dp))
+      Text("Accept all suggestions ($suggestions)")
+    }
+  }
+  SplitPages(split, pages, preset, onEdit, idle, duplicates)
 
   // photos and signatures are often a small part of a scanned page: cut them out
   val cutItems = preset.items.withIndex().filter { (i, it) -> it.kind != ItemKind.DOCUMENT && split.pagesOf(i, pages).isNotEmpty() }
@@ -644,11 +790,13 @@ private fun SplitHint(text: String) {
 /** Every page as a tile: tap to select; under it, the item it was given to */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SplitPages(split: SplitState, pages: List<PdfPage>, preset: Preset?, onEdit: (Int) -> Unit, idle: Boolean) {
+private fun SplitPages(split: SplitState, pages: List<PdfPage>, preset: Preset?, onEdit: (Int) -> Unit, idle: Boolean, duplicates: Duplicates<PdfPage>? = null) {
   Row(verticalAlignment = Alignment.CenterVertically) {
     SectionLabel("Pages (${pages.size}) · tap to select", Modifier.weight(1f))
     TextButton(onClick = { onEdit(0) }, enabled = idle) { Text("Edit all pages") }
   }
+  duplicates?.let { DuplicatesBar(it, enabled = idle) }
+  val sameAs = duplicates?.sameAs ?: emptyList()
   FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     pages.forEachIndexed { n, page ->
       val isSelected = page in split.selected
@@ -684,6 +832,9 @@ private fun SplitPages(split: SplitState, pages: List<PdfPage>, preset: Preset?,
           textAlign = TextAlign.Center,
         )
         split.recipeFor(page)?.beautyBadge()?.let { BeautyBadge(it) }
+        sameAs.getOrNull(n)?.let { DuplicateBadge(it) }
+        val hint = if (item == null) split.suggested[page]?.let { preset?.items?.getOrNull(it) } else null
+        if (hint != null) SuggestionBadge(hint.title, onAccept = { split.accept(page) }, onReject = { split.reject(page) }, enabled = idle)
       }
     }
   }
@@ -725,5 +876,35 @@ private fun SaveToStudent(split: SplitState) {
       },
       onDismiss = { picking = false },
     )
+  }
+}
+
+/** A suggested item on a page: its name, ✓ to give the page to it, ✕ to say it is not */
+@Composable
+private fun SuggestionBadge(title: String, onAccept: () -> Unit, onReject: () -> Unit, enabled: Boolean) {
+  Surface(
+    shape = RoundedCornerShape(8.dp),
+    color = MaterialTheme.colorScheme.secondaryContainer,
+    modifier = Modifier.padding(top = 2.dp),
+  ) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(top = 3.dp)) {
+      Text(
+        "$title?",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSecondaryContainer,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.padding(horizontal = 4.dp),
+      )
+      Row {
+        IconButton(onClick = onAccept, enabled = enabled, modifier = Modifier.size(34.dp)) {
+          Icon(AppIcons.Check, contentDescription = "Give this page to $title", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+        }
+        IconButton(onClick = onReject, enabled = enabled, modifier = Modifier.size(34.dp)) {
+          Icon(AppIcons.Close, contentDescription = "Not $title", modifier = Modifier.size(18.dp))
+        }
+      }
+    }
   }
 }

@@ -39,6 +39,8 @@ data class PresetItem(
    * matched to items by it). "" in files from older versions: given one when loaded / saved.
    */
   val id: String = "",
+  /** Words on the paper that tell it apart (Split by preset suggests pages with them): optional */
+  val keywords: List<String> = emptyList(),
 )
 
 /** Every item with an id (new or older items get a fresh one) */

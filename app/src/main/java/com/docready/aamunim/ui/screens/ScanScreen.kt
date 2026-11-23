@@ -65,6 +65,9 @@ import com.docready.aamunim.data.DraftPage
 import com.docready.aamunim.data.DraftRepository
 import com.docready.aamunim.data.model.title
 import com.docready.aamunim.ui.components.DraftOffer
+import com.docready.aamunim.ui.components.DuplicateBadge
+import com.docready.aamunim.ui.components.Duplicates
+import com.docready.aamunim.ui.components.DuplicatesBar
 import com.docready.aamunim.ui.components.FactChips
 import com.docready.aamunim.ui.components.SearchableSwitch
 import com.docready.aamunim.data.model.ItemKind
@@ -294,7 +297,11 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
   fun remove(page: Page) {
     pages.remove(page)
     result = null
+    duplicates.forgetUndo()
   }
+
+  /** Pages that look like an earlier page (the same paper scanned twice) */
+  val duplicates = Duplicates(viewModelScope, pages, { it.thumb }) { result = null }
 
   fun make() {
     val kb = maxKbText.toIntOrNull()
@@ -577,6 +584,8 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
           SectionLabel("${vm.pages.size} page${if (vm.pages.size == 1) "" else "s"} · tap a page to edit it", Modifier.weight(1f))
           TextButton(onClick = { vm.openEditor(0) }, enabled = vm.busy == null) { Text("Edit all pages") }
         }
+        DuplicatesBar(vm.duplicates, enabled = vm.busy == null)
+        val sameAs = vm.duplicates.sameAs
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           vm.pages.forEachIndexed { i, p ->
             Column(Modifier.width(104.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -593,6 +602,7 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
                 p.thumb?.let { Image(it, contentDescription = "Page ${i + 1}", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()) }
               }
               Text("${i + 1}", style = MaterialTheme.typography.labelSmall)
+              sameAs.getOrNull(i)?.let { DuplicateBadge(it) }
               p.warning?.let { PageNote(it) }
               p.recipe.beautyBadge()?.let { BeautyBadge(it) }
               if (p.checkCorners) PageNote("Check the corners")
