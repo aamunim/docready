@@ -601,6 +601,11 @@ fun SplitTool(
   }
 
   SectionLabel("1 · Choose the form's preset")
+  if (presets.isEmpty()) {
+    NoPresetsCard(onNewPreset)
+    SplitPages(split, pages, null)
+    return
+  }
   Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
     for (p in presets) FilterChip(selected = split.preset?.id == p.id, onClick = { split.choosePreset(p) }, label = { Text(p.name) })
   }

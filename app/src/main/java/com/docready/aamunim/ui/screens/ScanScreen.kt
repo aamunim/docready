@@ -55,6 +55,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.docready.aamunim.data.FileNames
 import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.data.model.OutputFormat
+import com.docready.aamunim.data.model.PresetItem
 import com.docready.aamunim.data.model.bytesText
 import com.docready.aamunim.docReady
 import com.docready.aamunim.imaging.DocTools
@@ -126,6 +127,13 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
   var colorMode by mutableStateOf(ColorMode.COLOR)
   var enhance by mutableStateOf(true)
   var maxKbText by mutableStateOf(item?.maxKb?.toString() ?: "")
+
+  /** The limits of a preset's document item, picked on this screen */
+  fun applyItem(it: PresetItem) {
+    format = if (it.format == OutputFormat.JPG) OutputFormat.JPG else OutputFormat.PDF
+    maxKbText = it.maxKb?.toString() ?: ""
+    result = null
+  }
   var busy by mutableStateOf<String?>(null)
   var result by mutableStateOf<FilesResult?>(null)
   var error by mutableStateOf<String?>(null)
@@ -366,7 +374,7 @@ fun FilesResultCard(r: FilesResult) {
 }
 
 @Composable
-fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
+fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}) {
   val context = LocalContext.current
   val app = context.applicationContext as Application
   val vm: ScanViewModel = viewModel { ScanViewModel(app, presetId, itemIndex) }
@@ -448,6 +456,7 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
           Spacer(Modifier.width(8.dp))
           Text("Use photos of papers")
         }
+        if (vm.preset == null) PresetItemShortcut(ItemKind.DOCUMENT, { _, item -> vm.applyItem(item) }, onNewPreset)
       } else if (vm.editing != null) {
         PageCornerEditor(vm)
       } else if (result != null) {
@@ -510,6 +519,7 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
           Text("Even out light and remove shadows", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
           Switch(checked = vm.enhance, onCheckedChange = { vm.enhance = it })
         }
+        if (vm.preset == null) PresetItemShortcut(ItemKind.DOCUMENT, { _, item -> vm.applyItem(item) }, onNewPreset)
         SectionLabel("Size limit")
         NumberField(
           if (vm.format == OutputFormat.PDF) "Max KB for the PDF (empty = no limit)" else "Max KB per picture (empty = no limit)",

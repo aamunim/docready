@@ -60,6 +60,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.docready.aamunim.data.FileNames
 import com.docready.aamunim.data.model.ItemKind
+import com.docready.aamunim.data.model.PresetItem
 import com.docready.aamunim.data.model.PhotoBackground
 import com.docready.aamunim.data.model.bytesText
 import com.docready.aamunim.data.model.label
@@ -246,6 +247,15 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
       edited()
     }
   var background by mutableStateOf(item?.background ?: PhotoBackground.WHITE)
+
+  /** The sizes of a preset's photo item, picked on this screen */
+  fun applyItem(it: PresetItem) {
+    it.widthPx?.let { w -> widthText = w.toString() }
+    it.heightPx?.let { h -> heightText = h.toString() }
+    maxKbText = it.maxKb?.toString() ?: ""
+    it.background?.let { b -> background = b }
+    if (hasSource) process()
+  }
   var headSize by mutableFloatStateOf(70f)
   var enhance by mutableStateOf(true)
   var busy by mutableStateOf<String?>(null)
@@ -433,7 +443,7 @@ fun messageOf(e: Throwable, fallback: String): String =
   if (e is OutOfMemoryError) "The picture is too big for this phone's memory." else e.message ?: fallback
 
 @Composable
-fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
+fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}) {
   val app = LocalContext.current.applicationContext as Application
   val vm: PhotoViewModel = viewModel { PhotoViewModel(app, presetId, itemIndex) }
   val source = rememberImageSource { vm.setSource(it) }
@@ -478,10 +488,11 @@ fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
         )
         VSpace(16)
         ImageSourceButtons(source)
+        if (vm.preset == null) PresetItemShortcut(ItemKind.PHOTO, { _, item -> vm.applyItem(item) }, onNewPreset)
         if (vm.busy != null) BusyRow(vm.busy ?: "")
         ErrorText(vm.error)
       } else {
-        PhotoEditor(vm)
+        PhotoEditor(vm, onNewPreset)
       }
     }
   }
@@ -493,7 +504,7 @@ fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
 }
 
 @Composable
-private fun PhotoEditor(vm: PhotoViewModel) {
+private fun PhotoEditor(vm: PhotoViewModel, onNewPreset: () -> Unit) {
   Column {
       Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Surface(
@@ -578,6 +589,7 @@ private fun PhotoEditor(vm: PhotoViewModel) {
         }
       }
 
+      if (vm.preset == null) PresetItemShortcut(ItemKind.PHOTO, { _, item -> vm.applyItem(item) }, onNewPreset)
       SectionLabel("Size for this time")
       Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         NumberField("Width px", vm.widthText, { vm.widthText = it }, Modifier.weight(1f))

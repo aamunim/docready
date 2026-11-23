@@ -45,6 +45,8 @@ fun PresetItem.summary(): String {
   parts.add(maxKb?.let { "max ${kbText(it)}" } ?: "no size limit")
   parts.add(format.name)
   if (kind == ItemKind.PHOTO && background != null) parts.add(background.label.lowercase() + " background")
+  pagesHint?.takeIf { it.isNotBlank() }?.let { parts.add("pages $it") }
+  if (!required) parts.add("optional")
   return parts.joinToString(" · ")
 }
 
@@ -62,3 +64,11 @@ fun bytesText(bytes: Long): String {
   val kb = (bytes + 1023) / 1024
   return if (kb >= 1024) String.format(java.util.Locale.US, "%.1f MB", bytes / 1048576.0) else "$kb KB"
 }
+
+/** A file name from any name (any script): only marks a file name can't hold become "_" */
+fun safeFileName(name: String, fallback: String): String =
+  name.trim()
+    .replace(Regex("[\\\\/:*?\"<>|\\x00-\\x1F\\s]+"), "_")
+    .trim('_', '.')
+    .take(60)
+    .ifEmpty { fallback }

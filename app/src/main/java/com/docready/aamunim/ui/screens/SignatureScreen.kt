@@ -63,6 +63,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.docready.aamunim.data.FileNames
 import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.data.model.OutputFormat
+import com.docready.aamunim.data.model.PresetItem
 import com.docready.aamunim.docReady
 import com.docready.aamunim.imaging.DocTools
 import com.docready.aamunim.imaging.PdfTools
@@ -122,6 +123,14 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
       maxKbState = v
       edited()
     }
+  /** The sizes of a preset's signature item, picked on this screen */
+  fun applyItem(it: PresetItem) {
+    it.widthPx?.let { w -> widthText = w.toString() }
+    it.heightPx?.let { h -> heightText = h.toString() }
+    maxKbText = it.maxKb?.toString() ?: ""
+    transparent = it.format == OutputFormat.PNG
+  }
+
   var transparent: Boolean
     get() = transparentState
     set(v) {
@@ -475,7 +484,7 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
 }
 
 @Composable
-fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
+fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}) {
   val app = LocalContext.current.applicationContext as Application
   val vm: SignatureViewModel = viewModel { SignatureViewModel(app, presetId, itemIndex) }
   val source = rememberImageSource { vm.setSource(it) }
@@ -524,6 +533,7 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
         )
         VSpace(16)
         ImageSourceButtons(source)
+        if (vm.preset == null) PresetItemShortcut(ItemKind.SIGNATURE, { _, item -> vm.applyItem(item) }, onNewPreset)
       } else {
         Text(
           "Drag the corners so the box fits closely around the signature.",
@@ -551,6 +561,7 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
           onSelect = { vm.transparent = it },
         )
 
+        if (vm.preset == null) PresetItemShortcut(ItemKind.SIGNATURE, { _, item -> vm.applyItem(item) }, onNewPreset)
         SectionLabel("Size")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           NumberField("Width px", vm.widthText, { vm.widthText = it }, Modifier.weight(1f))
