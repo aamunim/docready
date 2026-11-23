@@ -512,8 +512,11 @@ class PageEditorState(
             recipes[j] = next
           }
           // the cleaned page revealed under the sweep, then the tick
-          val cleaned = withContext(Dispatchers.Default) {
-            PageRenderer.render(pages[j].load(ANIM_SIDE), recipes[j]).asImageBitmap()
+          // (long documents: no extra render just for the reveal)
+          val cleaned = if (pages.size <= 20) {
+            withContext(Dispatchers.Default) { PageRenderer.render(pages[j].load(ANIM_SIDE), recipes[j]).asImageBitmap() }
+          } else {
+            raw
           }
           anim = anim?.copy(after = cleaned, done = true, label = "Page ${j + 1} of ${pages.size} ready")
           // (a moment to see it; never slowing a long document down)
@@ -564,10 +567,14 @@ class PageEditorState(
   fun setLook(l: Look) {
     if (l == recipe.look) return
     val magic = l == Look.MAGIC || l == Look.MAGIC_BW || l == Look.LIGHTEN
-    if (magic) startAnim("Applying ${l.title}…")
+    // one reveal at a time: a quick second choice replaces the first
+    lookAnimJob?.cancel()
+    if (magic) startAnim("Applying ${l.title}…") else anim = null
     update(recipe.copy(look = l))
-    if (magic) scope.launch { finishAnim("${l.title} applied") }
+    if (magic) lookAnimJob = scope.launch { finishAnim("${l.title} applied") }
   }
+
+  private var lookAnimJob: Job? = null
 
   fun stopBeautify() {
     beautifyJob?.cancel()

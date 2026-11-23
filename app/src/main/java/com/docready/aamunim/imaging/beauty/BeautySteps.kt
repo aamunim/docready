@@ -202,7 +202,7 @@ object BeautySteps {
    * Denoise, then sharpen (in this order: sharpening noise would make it worse). Lone dark
    * specks on paper are removed, flat areas smoothed, then the edges of writing are sharpened.
    */
-  fun clarity(p: Px, amount: Float, protect: List<IBox> = emptyList()) {
+  fun clarity(p: Px, amount: Float, protect: List<IBox> = emptyList(), flatRange: Int = 24) {
     if (amount <= 0f) return
     val w = p.w
     // the page's own ink level: a dot as dark as the writing is a decimal point, an i-dot,
@@ -232,7 +232,7 @@ object BeautySteps {
         // a lone speck fainter than the ink: all 8 neighbours much lighter
         lighter == 8 && l > inkLevel + 40 -> Px.rgb((sr - Px.r(c)) / 8, (sg - Px.g(c)) / 8, (sb - Px.b(c)) / 8)
         // a flat area: its noise smoothed
-        mx - mn < 24 -> {
+        mx - mn < flatRange -> {
           val k = amount
           Px.rgb(
             (Px.r(c) + (sr / 9 - Px.r(c)) * k).roundToInt(),

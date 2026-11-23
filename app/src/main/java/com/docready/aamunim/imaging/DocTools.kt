@@ -383,14 +383,14 @@ object DocTools {
     return true
   }
 
-  fun warp(src: Bitmap, q: FloatArray): Bitmap {
+  fun warp(src: Bitmap, q: FloatArray, maxSide: Int = 2400): Bitmap {
     val W = src.width.toFloat()
     val H = src.height.toFloat()
     val px = FloatArray(8) { i -> q[i].coerceIn(0f, 1f) * if (i % 2 == 0) W else H }
     fun d(a: Int, b: Int) = sqrt(((px[a * 2] - px[b * 2]) * (px[a * 2] - px[b * 2]) + (px[a * 2 + 1] - px[b * 2 + 1]) * (px[a * 2 + 1] - px[b * 2 + 1])).toDouble()).toFloat()
     var ow = max(d(0, 1), d(3, 2))
     var oh = max(d(0, 3), d(1, 2))
-    val k = min(1f, 2400f / max(ow, oh))
+    val k = min(1f, maxSide.toFloat() / max(ow, oh))
     ow = max(1f, ow * k)
     oh = max(1f, oh * k)
     val dst = floatArrayOf(0f, 0f, ow, 0f, ow, oh, 0f, oh)
@@ -560,10 +560,10 @@ object DocTools {
    * A page straightened from its four corners (when they make a real shape) and turned by
    * 0 / 90 / 180 / 270 degrees. [src] is used up (recycled when a new picture is made).
    */
-  fun straighten(src: Bitmap, quad: FloatArray?, turn: Int): Bitmap {
+  fun straighten(src: Bitmap, quad: FloatArray?, turn: Int, maxSide: Int = 2400): Bitmap {
     var b = src
     if (quad != null && isConvex(quad)) {
-      val flat = warp(b, quad)
+      val flat = warp(b, quad, maxSide)
       b.recycle()
       b = flat
     }
@@ -783,7 +783,17 @@ object DocTools {
         val size = FileOutputStream(dest).buffered().use { s -> writePdf(s, pages.size) { i -> encodePage(pages[i], q, factor) } }
         return Triple(size, q, ok && (maxBytes == null || size <= maxBytes))
       }
-      k *= 0.85f
+      // too heavy even at the lowest quality: the first step jumps near the size that fits (the
+      // weight goes with the area, so the scale with its square root), then 15 % steps as before;
+      // never below about 100 dpi, so the fit guarantee is unchanged
+      val atLowest = totals[MIN_QUALITY]
+      val jump = if (k == 1f && atLowest != null && budget != null && budget > 0 && atLowest > 0) {
+        (kotlin.math.sqrt(budget.toDouble() / atLowest) * 0.95).toFloat().coerceIn(0.3f, 0.85f)
+      } else {
+        0.85f
+      }
+      // (1169: the floor is always reached exactly, never a float hair above the exit check)
+      k = max(k * jump, 1169f / longest)
     }
   }
 

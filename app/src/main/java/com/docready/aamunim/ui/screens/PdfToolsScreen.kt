@@ -283,7 +283,8 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
       val before = pages.size
       val problems = mutableListOf<String>()
       try {
-        for ((fileOf, info) in items) {
+        for ((index, item) in items.withIndex()) {
+          val (fileOf, info) = item
           val (mime, name) = info
           val pagesBefore = pages.size
           try {
@@ -320,7 +321,8 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
                 listThumb(c.copy(Bitmap.Config.ARGB_8888, false)) to c.asImageBitmap()
               }
               anim = anim?.copy(after = cleaned, done = true, label = "$name ready")
-              if (animationsEnabled(ctx)) delay(600)
+              // (only a few photos, or the last one, pause to show the result)
+              if (animationsEnabled(ctx) && (items.size <= 3 || index == items.size - 1)) delay(600)
               val page = PdfPage(shown, name, f.length(), f, -1)
               // a photo of paper: shadows removed, colour evened (changeable in the editor)
               recipes[page] = PageRecipe.Document

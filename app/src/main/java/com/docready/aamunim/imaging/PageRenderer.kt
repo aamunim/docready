@@ -34,7 +34,8 @@ object PageRenderer {
    * text straightening. This is what the crop box is drawn on.
    */
   fun geometry(src: Bitmap, r: PageRecipe, beautyPixels: Boolean = true): Bitmap {
-    var b = DocTools.straighten(src, r.quad?.toFloatArray(), r.turn)
+    // (the straightened page keeps the source's detail: no 2400 px cap)
+    var b = DocTools.straighten(src, r.quad?.toFloatArray(), r.turn, maxOf(src.width, src.height))
     if (abs(r.rotate) >= 0.05f) b = rotateFine(b, r.rotate)
     val bt = r.beautify
     if (bt != null) {

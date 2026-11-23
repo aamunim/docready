@@ -188,7 +188,8 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
           pages.add(page)
           anim = anim?.copy(after = cleaned, done = true, label = if (list.size == 1) "Page ready" else "Page ${n + 1} of ${list.size} ready")
           // (a moment to see the reveal and the tick; none when animations are off)
-          if (animated) delay(650)
+          // (only short batches and the last page pause: never slowing a long scan down)
+          if (animated && (list.size <= 3 || n == list.size - 1)) delay(650)
         }
       } catch (e: Throwable) {
         error = messageOf(e, "The pages could not be read.")
