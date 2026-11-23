@@ -55,8 +55,9 @@ class StudentRepository(
     if (alsoDownloads) {
       for (f in s.files) {
         val uri = Uri.parse(f.downloadsUri ?: continue)
+        val own = ownFile(uri)
         val removed = try {
-          context.contentResolver.delete(uri, null, null) > 0
+          if (own != null) own.delete() || !own.exists() else context.contentResolver.delete(uri, null, null) > 0
         } catch (_: Exception) {
           false
         }
@@ -69,7 +70,25 @@ class StudentRepository(
     left
   }
 
-  private fun stillThere(uri: Uri): Boolean = try {
+  /**
+   * Android 8-9 saves (the app's own FileProvider link): the file itself. Its provider answers a
+   * query with a row even when the file is gone, so the file on disk is what tells.
+   */
+  private fun ownFile(uri: Uri): File? {
+    if (uri.authority != context.packageName + ".fileprovider") return null
+    val seg = uri.pathSegments
+    if (seg.size < 2) return null
+    val root = when (seg[0]) {
+      "saved" -> context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)?.let { File(it, "DocReady") }
+      "saved_internal" -> File(context.filesDir, "Downloads/DocReady")
+      else -> null
+    } ?: return null
+    val f = File(root, seg.drop(1).joinToString("/"))
+    // (never outside the folder the link stands for)
+    return f.takeIf { it.canonicalPath.startsWith(root.canonicalPath + File.separator) }
+  }
+
+  private fun stillThere(uri: Uri): Boolean = ownFile(uri)?.exists() ?: try {
     context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { it.moveToFirst() } ?: false
   } catch (_: SecurityException) {
     // (not readable by the app any more, but it may well be there)
@@ -164,7 +183,13 @@ class StudentRepository(
           })
         }
       }
-      if (list != loaded) file.writeTextAtomic(AppJson.encodeToString(ListSerializer(Student.serializer()), list))
+      if (list != loaded) {
+        // (a failed write-back, e.g. a full disk, must never lose the students: written next save)
+        try {
+          file.writeTextAtomic(AppJson.encodeToString(ListSerializer(Student.serializer()), list))
+        } catch (_: Exception) {
+        }
+      }
       list
     } else {
       emptyList()

@@ -100,7 +100,31 @@ class DraftRepository(private val context: Context) {
   /** The list read again (and, once per app start, old drafts removed) */
   suspend fun refresh() = io { publish() }
 
-  suspend fun load(key: String): Draft? = io {
+  /** Writes started as a tool closed (or ended a draft), by draft: a new screen's load waits for them */
+  private val pending = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+  /**
+   * [block] on the repository's own scope, after any earlier such work for [key]; [load] of that
+   * key waits for it, so a draft flushed by a closing screen is never missed by the next one.
+   */
+  fun launchFor(key: String, block: suspend () -> Unit) {
+    synchronized(pending) {
+      val before = pending[key]
+      val job = scope.launch {
+        before?.join()
+        block()
+      }
+      pending[key] = job
+      job.invokeOnCompletion { pending.remove(key, job) }
+    }
+  }
+
+  suspend fun load(key: String): Draft? {
+    pending[key]?.join()
+    return loadNow(key)
+  }
+
+  private suspend fun loadNow(key: String): Draft? = io {
     val dir = dirOf(key)
     val d = read(dir) ?: return@io null
     // full paths again, pages whose file is gone left out
@@ -229,6 +253,8 @@ class DraftKeeper(
     job = scope.launch {
       snapshotFlow { snapshot() }.collectLatest { d ->
         if (d != null) hadContent = true
+        // changed since it was saved: a draft again (and "nothing" ends it again)
+        if (d != savedState) savedState = null
         delay(1200)
         write(d)
       }
@@ -244,14 +270,15 @@ class DraftKeeper(
     val d = snapshot()
     if (d != null) hadContent = true
     if (d == written) return
-    repo.scope.launch { write(d) }
+    if (d != savedState) savedState = null
+    repo.launchFor(key) { write(d) }
   }
 
   private suspend fun write(d: Draft?) {
     try {
       when {
         d == null && !hadContent -> Unit
-        d == null -> repo.clear(key) { savedState == null }.also { written = null }
+        d == null -> repo.clear(key).also { written = null }
         else -> repo.save(d) { d != savedState }.also { written = d }
       }
     } catch (_: Exception) {
@@ -264,7 +291,7 @@ class DraftKeeper(
     savedState = d
     written = d
     // (on the repository's scope: the tool usually closes right after)
-    repo.scope.launch {
+    repo.launchFor(key) {
       try {
         repo.clear(key)
       } catch (_: Exception) {

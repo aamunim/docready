@@ -158,12 +158,29 @@ fun SaveSheet(
             error = null
             scope.launch {
               try {
+                // each file on its own: one that can't be fitted (a PDF over 150 pages) keeps its
+                // message, the others are still fixed
+                val problems = mutableListOf<String>()
                 val fixed = withContext(Dispatchers.Default) {
-                  items.map { f -> if (f in tooBig) SizeFixer.fit(context, f) else f }
+                  items.map { f ->
+                    if (f !in tooBig) {
+                      f
+                    } else {
+                      try {
+                        SizeFixer.fit(context, f)
+                      } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                      } catch (e: Throwable) {
+                        problems.add("${f.name}: ${e.message ?: "could not be fitted."}")
+                        f
+                      }
+                    }
+                  }
                 }
                 items = fixed
-                val still = fixed.count { it.maxKb != null && it.file.length() > it.maxKb * 1024L }
-                if (still > 0) error = "$still file(s) can't get under their limit, even at the lowest readable quality."
+                val still = fixed.count { it.maxKb != null && it.file.length() > it.maxKb * 1024L } - problems.size
+                if (still > 0) problems.add("$still file(s) can't get under their limit, even at the lowest readable quality.")
+                if (problems.isNotEmpty()) error = problems.joinToString("\n")
               } catch (e: Throwable) {
                 error = e.message ?: "The files could not be fitted."
               } finally {

@@ -63,7 +63,11 @@ class PresetRepository(context: Context) {
       // items saved by older versions get their ids now, kept from then on
       val list = loaded.map { it.withItemIds(::newId).copy(builtIn = false) }.sortedBy { it.name.lowercase() }
       if (list.zip(loaded.sortedBy { it.name.lowercase() }).any { (a, b) -> a.items != b.items }) {
-        file.writeTextAtomic(AppJson.encodeToString(ListSerializer(Preset.serializer()), list))
+        // (a failed write-back, e.g. a full disk, must never lose the presets: written next save)
+        try {
+          file.writeTextAtomic(AppJson.encodeToString(ListSerializer(Preset.serializer()), list))
+        } catch (_: Exception) {
+        }
       }
       list
     } else {
