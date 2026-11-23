@@ -57,6 +57,7 @@ fun HomeScreen(
   onSplit: () -> Unit,
   onPresets: () -> Unit,
   onNewPreset: () -> Unit,
+  onStudents: () -> Unit = {},
   onPreset: (String) -> Unit,
   onFolder: (String) -> Unit,
   onAccounts: () -> Unit,
@@ -112,6 +113,14 @@ fun HomeScreen(
       }
       Spacer(Modifier.height(10.dp))
       SplitCard(onSplit)
+      Spacer(Modifier.height(10.dp))
+      val students by app.students.students.collectAsState()
+      WideCard(
+        AppIcons.Person,
+        "Students",
+        if (students.isEmpty()) "Each applicant's papers together, with a checklist" else "${students.size} student${if (students.size == 1) "" else "s"} · checklist, files, ZIP",
+        onStudents,
+      )
 
       Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("Presets", style = SectionLabelStyle, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
@@ -261,6 +270,27 @@ private fun SplitCard(onClick: () -> Unit) {
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
         )
+      }
+    }
+  }
+}
+
+/** A full-width action card (Students) */
+@Composable
+private fun WideCard(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
+  Surface(
+    onClick = onClick,
+    shape = RoundedCornerShape(18.dp),
+    color = MaterialTheme.colorScheme.surface,
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+    modifier = Modifier.fillMaxWidth().height(72.dp),
+  ) {
+    Row(Modifier.padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+      Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
+      Spacer(Modifier.width(12.dp))
+      Column(Modifier.weight(1f)) {
+        Text(title, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+        Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
       }
     }
   }

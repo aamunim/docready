@@ -538,7 +538,7 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
 }
 
 @Composable
-fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}) {
+fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}, studentId: String? = null) {
   val app = LocalContext.current.applicationContext as Application
   val vm: SignatureViewModel = viewModel { SignatureViewModel(app, presetId, itemIndex) }
   // the shared page editor takes the whole screen while it is open
@@ -564,11 +564,15 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNew
           OutlinedButton(onClick = { vm.process() }, enabled = vm.busy == null, modifier = Modifier.height(52.dp)) {
             Text(if (vm.result == null) "Make it" else "Make again")
           }
-          Button(
-            onClick = { saving = true },
-            enabled = vm.result != null && !vm.stale && vm.busy == null,
-            modifier = Modifier.weight(1f).height(52.dp),
-          ) { Text("Save or share") }
+          if (studentId != null) {
+            AddToStudentButton(studentId, vm.result?.ready?.takeIf { !vm.stale && vm.busy == null }?.let { listOf(it) }, vm.preset, Modifier.weight(1f), onBack)
+          } else {
+            Button(
+              onClick = { saving = true },
+              enabled = vm.result != null && !vm.stale && vm.busy == null,
+              modifier = Modifier.weight(1f).height(52.dp),
+            ) { Text("Save or share") }
+          }
         }
       }
     },

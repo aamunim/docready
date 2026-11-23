@@ -45,6 +45,7 @@ class PhoneSaveTarget(private val folders: FolderRepository) : SaveTarget {
         SaveOutcome.Saved(
           where = description(name),
           names = saved.map { it.name },
+          files = saved.toList(),
           note = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) null else "On Android 9 and older, files stay in DocReady's own folder.",
         )
       } catch (e: Exception) {

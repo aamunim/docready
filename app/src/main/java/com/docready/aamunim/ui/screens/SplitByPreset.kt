@@ -583,6 +583,7 @@ fun SplitTool(
     if (results.any { it.files.isNotEmpty() }) {
       VSpace(12)
       Button(onClick = saveAll, enabled = idle, modifier = Modifier.fillMaxWidth()) { Text("Save or share all") }
+      SaveToStudent(split)
     }
   }
 }
@@ -668,5 +669,36 @@ private fun SplitPages(split: SplitState, pages: List<PdfPage>, preset: Preset?,
         split.recipeFor(page)?.beautyBadge()?.let { BeautyBadge(it) }
       }
     }
+  }
+}
+
+/** Split's files kept for a student (each as its preset item, so the student's checklist fills in) */
+@Composable
+private fun SaveToStudent(split: SplitState) {
+  val context = LocalContext.current
+  val app = context.docReady
+  val scope = androidx.compose.runtime.rememberCoroutineScope()
+  var picking by androidx.compose.runtime.remember { mutableStateOf(false) }
+  var busy by androidx.compose.runtime.remember { mutableStateOf(false) }
+  OutlinedButton(onClick = { picking = true }, enabled = !busy, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+    Text(if (busy) "Saving…" else "Save to a student…")
+  }
+  if (picking) {
+    StudentPickerDialog(
+      onPick = { s ->
+        picking = false
+        busy = true
+        scope.launch {
+          val r = app.students.attach(s.id, split.allFiles(), split.preset)
+          busy = false
+          android.widget.Toast.makeText(
+            context,
+            if (r is com.docready.aamunim.save.SaveOutcome.Failed) "Kept for ${s.name}; Downloads: ${r.message}" else "Saved to ${s.name}",
+            android.widget.Toast.LENGTH_LONG,
+          ).show()
+        }
+      },
+      onDismiss = { picking = false },
+    )
   }
 }

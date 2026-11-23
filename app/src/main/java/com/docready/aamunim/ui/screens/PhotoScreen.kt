@@ -476,7 +476,7 @@ fun messageOf(e: Throwable, fallback: String): String =
   if (e is OutOfMemoryError) "The picture is too big for this phone's memory." else e.message ?: fallback
 
 @Composable
-fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}) {
+fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}, studentId: String? = null) {
   val app = LocalContext.current.applicationContext as Application
   val vm: PhotoViewModel = viewModel { PhotoViewModel(app, presetId, itemIndex) }
   // the shared page editor takes the whole screen while it is open
@@ -499,11 +499,16 @@ fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPres
       if (vm.hasSource) {
         BottomActions {
           OutlinedButton(onClick = source.takePhoto, modifier = Modifier.height(52.dp)) { Text("Retake") }
-          Button(
-            onClick = { saving = true },
-            enabled = vm.result != null && !vm.stale && vm.busy == null,
-            modifier = Modifier.weight(1f).height(52.dp),
-          ) { Text("Save or share") }
+          if (studentId != null) {
+            // made for a student: added to them (app storage + Downloads / DocReady / <name>)
+            AddToStudentButton(studentId, vm.result?.ready?.takeIf { !vm.stale && vm.busy == null }?.let { listOf(it) }, vm.preset, Modifier.weight(1f), onBack)
+          } else {
+            Button(
+              onClick = { saving = true },
+              enabled = vm.result != null && !vm.stale && vm.busy == null,
+              modifier = Modifier.weight(1f).height(52.dp),
+            ) { Text("Save or share") }
+          }
         }
       }
     },

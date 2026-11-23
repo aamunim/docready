@@ -1,0 +1,135 @@
+package com.docready.aamunim.data
+
+import android.content.Context
+import android.net.Uri
+import com.docready.aamunim.data.model.Preset
+import com.docready.aamunim.data.model.Student
+import com.docready.aamunim.data.model.StudentFile
+import com.docready.aamunim.data.model.title
+import com.docready.aamunim.save.ReadyFile
+import com.docready.aamunim.save.SaveOutcome
+import com.docready.aamunim.save.SaveTarget
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.builtins.ListSerializer
+import java.io.File
+import java.util.UUID
+
+/**
+ * Students and their files: the list as JSON (students.json); each student's files copied into
+ * the app's own storage (files/students/<id>/) and saved to Downloads/DocReady/<student name>/.
+ */
+class StudentRepository(private val context: Context, private val phone: SaveTarget, private val settings: SettingsRepository) {
+  private val file = File(context.filesDir, "students.json")
+  private val lock = Any()
+  private val _students = MutableStateFlow(read())
+
+  /** Most recently changed first */
+  val students: StateFlow<List<Student>> = _students.asStateFlow()
+
+  fun get(id: String?): Student? = if (id == null) null else _students.value.firstOrNull { it.id == id }
+
+  fun save(s: Student): Student {
+    val now = System.currentTimeMillis()
+    val stored = s.copy(createdAt = if (s.createdAt == 0L) now else s.createdAt, updatedAt = now)
+    synchronized(lock) { write(_students.value.filter { it.id != stored.id } + stored) }
+    return stored
+  }
+
+  /** The student forgotten, their app copies removed; [alsoDownloads]: their files in Downloads too */
+  suspend fun delete(id: String, alsoDownloads: Boolean) = withContext(Dispatchers.IO) {
+    val s = get(id) ?: return@withContext
+    if (alsoDownloads) {
+      for (f in s.files) {
+        val uri = f.downloadsUri ?: continue
+        try {
+          context.contentResolver.delete(Uri.parse(uri), null, null)
+        } catch (_: Exception) {
+          // (already gone, or no longer ours)
+        }
+      }
+    }
+    dirOf(id).deleteRecursively()
+    synchronized(lock) { write(_students.value.filter { it.id != id }) }
+  }
+
+  /** One file removed from the student (its app copy; the Downloads copy stays) */
+  fun removeFile(id: String, f: StudentFile) {
+    val s = get(id) ?: return
+    File(f.path).delete()
+    save(s.copy(files = s.files.filter { it != f }))
+  }
+
+  /**
+   * Ready files added to a student (blocking IO inside): named by the file-name pattern with the
+   * student's tokens, copied into the app's storage and saved to Downloads/DocReady/<student>.
+   * Returns where they went (or why not).
+   */
+  suspend fun attach(id: String, files: List<ReadyFile>, preset: Preset?): SaveOutcome = withContext(Dispatchers.IO) {
+    val s = get(id) ?: return@withContext SaveOutcome.Failed("This student is no longer here.")
+    val naming = NameContext(preset = preset?.name, presetPattern = preset?.namePattern, student = s.name, roll = s.roll)
+    val dir = dirOf(id).apply { mkdirs() }
+    val used = (dir.list()?.toSet() ?: emptySet()).toMutableSet()
+    val named = files.mapIndexed { i, f ->
+      val dot = f.name.lastIndexOf('.')
+      val base = if (dot > 0) f.name.substring(0, dot) else f.name
+      val ext = if (dot > 0) f.name.substring(dot + 1) else "bin"
+      val name = FileNames.unique(Naming.apply(settings.naming.value, naming, base, if (files.size > 1) i + 1 else 1), ext, used)
+      used.add(name)
+      val kept = File(dir, name)
+      f.file.copyTo(kept, overwrite = true)
+      f.copy(file = kept, name = name)
+    }
+    // also in Downloads/DocReady/<student> (a failure there still keeps the app's copies)
+    val outcome = phone.save(context, named, s.name)
+    val links = (outcome as? SaveOutcome.Saved)?.files ?: emptyList()
+    val now = System.currentTimeMillis()
+    val added = named.mapIndexed { i, f ->
+      StudentFile(
+        name = f.name,
+        path = f.file.path,
+        mime = f.mime,
+        bytes = f.file.length(),
+        itemIndex = f.itemIndex,
+        itemTitle = f.itemIndex?.let { preset?.items?.getOrNull(it)?.title },
+        downloadsUri = links.getOrNull(i)?.uri,
+        savedAt = now + i,
+      )
+    }
+    val fresh = get(id) ?: return@withContext outcome
+    save(fresh.copy(files = fresh.files + added, presetId = fresh.presetId ?: preset?.id))
+    outcome
+  }
+
+  /**
+   * The student's files as ready files in the app's share folder (copies: the student's own
+   * storage is never handed to other apps, and the save sheet may rename what it gets). Blocking.
+   */
+  fun exportCopies(s: Student): List<ReadyFile> =
+    s.files.filter { File(it.path).exists() }.map { f ->
+      val out = FileNames.outputFile(context, f.name)
+      File(f.path).copyTo(out, overwrite = true)
+      ReadyFile(out, f.name, f.mime, itemIndex = f.itemIndex)
+    }
+
+  private fun dirOf(id: String) = File(File(context.filesDir, "students"), id)
+
+  private fun write(list: List<Student>) {
+    val sorted = list.sortedByDescending { it.updatedAt }
+    file.writeTextAtomic(AppJson.encodeToString(ListSerializer(Student.serializer()), sorted))
+    _students.value = sorted
+  }
+
+  private fun read(): List<Student> = try {
+    if (file.exists()) AppJson.decodeFromString(ListSerializer(Student.serializer()), file.readText()).sortedByDescending { it.updatedAt } else emptyList()
+  } catch (_: Exception) {
+    emptyList()
+  }
+
+  companion object {
+    fun newId(): String = UUID.randomUUID().toString()
+  }
+}

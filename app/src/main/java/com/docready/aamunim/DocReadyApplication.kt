@@ -12,6 +12,9 @@ class DocReadyApplication : Application() {
   val folders: FolderRepository by lazy { FolderRepository(this) }
   val saveTargets: SaveTargets by lazy { SaveTargets(folders) }
   val settings: com.docready.aamunim.data.SettingsRepository by lazy { com.docready.aamunim.data.SettingsRepository(this) }
+  val students: com.docready.aamunim.data.StudentRepository by lazy {
+    com.docready.aamunim.data.StudentRepository(this, saveTargets.phone, settings)
+  }
 }
 
 val Context.docReady: DocReadyApplication

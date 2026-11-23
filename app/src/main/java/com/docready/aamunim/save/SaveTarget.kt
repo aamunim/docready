@@ -31,7 +31,13 @@ enum class SaveTargetKind(val title: String) {
 
 sealed interface SaveOutcome {
   /** [where]: a place people understand ("Downloads / DocReady / My form") */
-  data class Saved(val where: String, val names: List<String>, val note: String? = null) : SaveOutcome
+  data class Saved(
+    val where: String,
+    val names: List<String>,
+    val note: String? = null,
+    /** What was saved, with its link (a student keeps it) */
+    val files: List<com.docready.aamunim.data.model.SavedFile> = emptyList(),
+  ) : SaveOutcome
   data object Shared : SaveOutcome
   data class Failed(val message: String) : SaveOutcome
 }

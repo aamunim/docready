@@ -1,5 +1,6 @@
 package com.docready.aamunim.ui.screens
 
+import com.docready.aamunim.docReady
 import kotlinx.coroutines.delay
 import com.docready.aamunim.ui.components.ScanAnimationCard
 import com.docready.aamunim.ui.components.ScanAnim
@@ -169,12 +170,22 @@ private fun listThumb(b: Bitmap): ImageBitmap {
   return lean.asImageBitmap()
 }
 
-class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : AndroidViewModel(app) {
+class PdfToolsViewModel(
+  app: Application,
+  startMode: PdfMode = PdfMode.MERGE,
+  presetId: String? = null,
+  itemIndex: Int = -1,
+) : AndroidViewModel(app) {
+  /** A preset's document item this PDF is made for (from a student's checklist), or null */
+  val preset = app.docReady.presets.get(presetId)
+  private val forItem = preset?.items?.getOrNull(itemIndex)?.takeIf { it.kind == com.docready.aamunim.data.model.ItemKind.DOCUMENT }
+  val itemPos: Int? = if (forItem != null) itemIndex else null
+
   private val ctx: Application get() = getApplication()
 
   var mode by mutableStateOf(startMode)
   val pages = mutableStateListOf<PdfPage>()
-  var maxKbText by mutableStateOf("")
+  var maxKbText by mutableStateOf(forItem?.maxKb?.toString() ?: "")
   var busy by mutableStateOf<String?>(null)
   var result by mutableStateOf<FilesResult?>(null)
   var error by mutableStateOf<String?>(null)
@@ -531,7 +542,7 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
             notesOut?.let { n -> notes.add(n) }
           }
           FilesResult(
-            listOf(ReadyFile(out, name, "application/pdf", kb)),
+            listOf(ReadyFile(out, name, "application/pdf", kb, itemIndex = itemPos)),
             previewImg,
             size, size, kb, fits, if (m == PdfMode.ID_CARD) 1 else chosen.size, OutputFormat.PDF, before,
           )
@@ -546,10 +557,17 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
 }
 
 @Composable
-fun PdfToolsScreen(onBack: () -> Unit, startMode: PdfMode = PdfMode.MERGE, onNewPreset: () -> Unit = {}) {
+fun PdfToolsScreen(
+  onBack: () -> Unit,
+  startMode: PdfMode = PdfMode.MERGE,
+  onNewPreset: () -> Unit = {},
+  presetId: String? = null,
+  itemIndex: Int = -1,
+  studentId: String? = null,
+) {
   val context = LocalContext.current
   val app = context.applicationContext as Application
-  val vm: PdfToolsViewModel = viewModel { PdfToolsViewModel(app, startMode) }
+  val vm: PdfToolsViewModel = viewModel { PdfToolsViewModel(app, startMode, presetId, itemIndex) }
   // the shared page editor takes the whole screen while it is open
   vm.editor?.let {
     PageEditorScreen(it)
@@ -619,7 +637,11 @@ fun PdfToolsScreen(onBack: () -> Unit, startMode: PdfMode = PdfMode.MERGE, onNew
             }
           } else {
             OutlinedButton(onClick = { vm.result = null }, enabled = vm.busy == null, modifier = Modifier.height(52.dp)) { Text("Change") }
-            Button(onClick = { saving = true }, enabled = vm.busy == null, modifier = Modifier.weight(1f).height(52.dp)) { Text("Save or share") }
+            if (studentId != null) {
+              AddToStudentButton(studentId, vm.result?.files?.takeIf { vm.busy == null }, vm.preset, Modifier.weight(1f), onBack)
+            } else {
+              Button(onClick = { saving = true }, enabled = vm.busy == null, modifier = Modifier.weight(1f).height(52.dp)) { Text("Save or share") }
+            }
           }
         }
       }

@@ -368,7 +368,7 @@ fun FilesResultCard(r: FilesResult) {
 }
 
 @Composable
-fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}) {
+fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}, studentId: String? = null) {
   val context = LocalContext.current
   val app = context.applicationContext as Application
   val vm: ScanViewModel = viewModel { ScanViewModel(app, presetId, itemIndex) }
@@ -418,8 +418,12 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
             }
           } else {
             OutlinedButton(onClick = { vm.clearResult() }, enabled = vm.busy == null, modifier = Modifier.height(52.dp)) { Text("Change") }
-            Button(onClick = { saving = true }, enabled = vm.busy == null, modifier = Modifier.weight(1f).height(52.dp)) {
-              Text("Save or share")
+            if (studentId != null) {
+              AddToStudentButton(studentId, vm.result?.files?.takeIf { vm.busy == null }, vm.preset, Modifier.weight(1f), onBack)
+            } else {
+              Button(onClick = { saving = true }, enabled = vm.busy == null, modifier = Modifier.weight(1f).height(52.dp)) {
+                Text("Save or share")
+              }
             }
           }
         }
