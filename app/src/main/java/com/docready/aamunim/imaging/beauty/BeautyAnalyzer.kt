@@ -9,12 +9,18 @@ import kotlin.math.sqrt
 
 enum class MarkKind { FINGER, HOLE, STAPLE }
 
-/** What the analysis found on one page; boxes / lines are parts of the page after straightening, the upside-down turn and the border trim */
+/**
+ * What the analysis found on one page. Boxes and lines are parts of the page as it was analysed
+ * (after the user's corners / turns / angle, before Beautify's own straightening, upside-down
+ * turn and border trim), so switching those on or off never moves them.
+ */
 class BeautyFindings(
   val deskew: Float,
   /** A large tilt (over 15°): offered, never applied by itself */
   val askAngle: Float?,
-  val flip: Boolean,
+  /** The page may be upside down: offered, never applied by itself */
+  val maybeUpsideDown: Boolean,
+  /** A uniform dark band at the edges: offered (outlined), never applied by itself */
   val trim: FBox?,
   val glare: List<FBox>,
   /** Some glare is pure white: what was under it can't come back */
@@ -36,23 +42,23 @@ class BeautyFindings(
  */
 object BeautyAnalyzer {
   fun analyze(page: Px, signature: Boolean = false): BeautyFindings {
-    // 1. straightening by the text lines; upside down when sure
+    // 1. straightening by the text lines (a large tilt is only offered); upside down only offered
     val skew = textAngle(page)
     var askAngle: Float? = null
     var deskew = 0f
     if (abs(skew) > 15f) askAngle = skew else if (abs(skew) >= 0.3f) deskew = skew
-    var p = if (deskew != 0f) BeautySteps.rotate(page, deskew) else page
-    val flip = !signature && upsideDown(p)
-    if (flip) p = BeautySteps.rotate180(p)
-    // 10a. a black border around the page
-    val trimBox = if (signature) null else blackBorder(p)
-    if (trimBox != null) p = BeautySteps.crop(p, trimBox.toPx(p.w, p.h))
+    val level = if (deskew != 0f) BeautySteps.rotate(page, deskew) else page
+    val maybeUpsideDown = !signature && upsideDown(level)
+    // 10a. a uniform black border (only offered)
+    val trimBox = if (signature) null else blackBorder(page)
 
+    // everything else on the page as analysed (the frame the boxes are kept in)
+    val p = page
+    val protect = if (signature) emptyList() else protectedAreas(p)
+    val protectPx = protect.map { it.toPx(p.w, p.h) }
     val grid = PaperGrid.of(p)
     val paper = grid.global()
     val paperLum = (paper[0] * 299 + paper[1] * 587 + paper[2] * 114) / 1000f
-    val protect = if (signature) emptyList() else protectedAreas(p)
-    val protectPx = protect.map { it.toPx(p.w, p.h) }
 
     val (glare, glareLoss) = if (signature) Pair(emptyList(), false) else glareAreas(p, paperLum)
     val (shadow, stains) = if (signature) Pair(false, false) else unevenPaper(grid, paper, protectPx)
@@ -64,7 +70,7 @@ object BeautyAnalyzer {
     return BeautyFindings(
       deskew = deskew,
       askAngle = askAngle,
-      flip = flip,
+      maybeUpsideDown = maybeUpsideDown,
       trim = trimBox,
       glare = glare,
       glareLoss = glareLoss,
@@ -74,8 +80,8 @@ object BeautyAnalyzer {
       folds = folds,
       edges = edges,
       blurry = sharpness < 60.0,
-      noisy = noisy(p, grid),
-      faded = faded(p, grid),
+      noisy = noisy(p, grid, protectPx),
+      faded = faded(p, grid, protectPx),
       protect = protect,
     )
   }
@@ -189,19 +195,21 @@ object BeautyAnalyzer {
   }
 
   /**
-   * Upside down: text lines are heavier at their top (Latin ascenders, the Bangla headline);
-   * when most lines are clearly heavier at the bottom, the page is upside down.
+   * A guess that the page is upside down (only ever offered to the user). Per text line:
+   * a headline row far denser than the rest (Bangla's matra) belongs at the line's top; else
+   * (Latin) the sparse tails around the dense core count — ascenders above outnumber
+   * descenders below. Most of at least 6 lines must point the same way.
    */
   fun upsideDown(p: Px): Boolean {
     val th = otsu(p)
-    val rows = IntArray(p.h)
     if (th > 200) return false
+    val rows = IntArray(p.h)
     for (y in 0 until p.h) for (x in 0 until p.w) if (Px.lum(p.data[y * p.w + x]) <= th) rows[y]++
     val peak = rows.maxOrNull() ?: return false
     if (peak == 0) return false
-    // (a line's thin parts count too: a Bangla headline is far denser than the letters under it)
     val cut = max(1, peak / 15)
-    val asym = ArrayList<Float>()
+    var upright = 0
+    var flipped = 0
     var y = 0
     while (y < p.h) {
       if (rows[y] < cut) {
@@ -211,16 +219,31 @@ object BeautyAnalyzer {
       val start = y
       while (y < p.h && rows[y] >= cut) y++
       val end = y
-      if (end - start < 4) continue
-      val mid = (start + end) / 2f
-      var up = 0
-      var down = 0
-      for (k in start until end) if (k < mid) up += rows[k] else down += rows[k]
-      if (up + down > 0) asym.add((up - down).toFloat() / (up + down))
+      val len = end - start
+      if (len < 6) continue
+      var top = start
+      for (k in start until end) if (rows[k] > rows[top]) top = k
+      val sorted = (start until end).map { rows[it] }.sorted()
+      val median = sorted[sorted.size / 2]
+      if (rows[top] > median * 2.5f) {
+        // a headline: at the top when upright
+        val pos = (top - start + 0.5f) / len
+        if (pos < 0.35f) upright++ else if (pos > 0.65f) flipped++
+      } else {
+        val core = rows[top] / 2
+        var c0 = start
+        while (c0 < end && rows[c0] < core) c0++
+        var c1 = end - 1
+        while (c1 > c0 && rows[c1] < core) c1--
+        var above = 0
+        var below = 0
+        for (k in start until c0) above += rows[k]
+        for (k in c1 + 1 until end) below += rows[k]
+        if (above > below * 1.4f + 2) upright++ else if (below > above * 1.4f + 2) flipped++
+      }
     }
-    if (asym.size < 6) return false
-    val negative = asym.count { it < -0.05f }
-    return asym.average() < -0.1 && negative >= asym.size * 0.7
+    val votes = upright + flipped
+    return votes >= 6 && flipped >= votes * 0.75f
   }
 
   // ------------------------------------------------------------------ 10. border, glare
@@ -234,16 +257,38 @@ object BeautyAnalyzer {
         val c = if (horizontal) p.data[line * p.w + k] else p.data[k * p.w + line]
         if (Px.lum(c) < 60) darkCount++
       }
-      return darkCount > n * 0.7
+      // a border is uniformly dark (a title banner has light letters in it: never cut)
+      if (darkCount <= n * 0.9) return false
+      var lightest = 0
+      for (k in 0 until n) {
+        val c = if (horizontal) p.data[line * p.w + k] else p.data[k * p.w + line]
+        val l = Px.lum(c)
+        if (l > lightest) lightest = l
+      }
+      return lightest < 120
+    }
+    /** Mostly paper: the band really ends where the page starts (not inside a dark banner) */
+    fun paper(line: Int, horizontal: Boolean): Boolean {
+      val n = if (horizontal) p.w else p.h
+      var darkCount = 0
+      for (k in 0 until n) {
+        val c = if (horizontal) p.data[line * p.w + k] else p.data[k * p.w + line]
+        if (Px.lum(c) < 100) darkCount++
+      }
+      return darkCount < n * 0.3
     }
     var top = 0
     while (top < p.h / 5 && dark(top, true)) top++
+    if (top >= p.h || !paper(min(p.h - 1, top + 1), true)) top = 0
     var bottom = p.h
     while (bottom > p.h * 4 / 5 && dark(bottom - 1, true)) bottom--
+    if (bottom <= 0 || !paper(max(0, bottom - 2), true)) bottom = p.h
     var left = 0
     while (left < p.w / 5 && dark(left, false)) left++
+    if (left >= p.w || !paper(min(p.w - 1, left + 1), false)) left = 0
     var right = p.w
     while (right > p.w * 4 / 5 && dark(right - 1, false)) right--
+    if (right <= 0 || !paper(max(0, right - 2), false)) right = p.w
     val minCut = max(2, min(p.w, p.h) / 200)
     val l = if (left >= minCut) left + 1 else 0
     val t = if (top >= minCut) top + 1 else 0
@@ -372,6 +417,9 @@ object BeautyAnalyzer {
     val inkRow = IntArray(p.h)
     val faintCol = IntArray(p.w)
     val inkCol = IntArray(p.w)
+    // barely darker than the paper: the soft sides of a fold
+    val slightRow = IntArray(p.h)
+    val slightCol = IntArray(p.w)
     for (y in 0 until p.h) for (x in 0 until p.w) {
       grid.at(x, y, paper)
       val pl = max(1f, (paper[0] * 299 + paper[1] * 587 + paper[2] * 114) / 1000f)
@@ -379,13 +427,16 @@ object BeautyAnalyzer {
       if (q in 0.70f..0.94f) {
         faintRow[y]++
         faintCol[x]++
+      } else if (q > 0.94f && q < 0.985f) {
+        slightRow[y]++
+        slightCol[x]++
       } else if (q < 0.6f) {
         inkRow[y]++
         inkCol[x]++
       }
     }
     val out = ArrayList<Triple<Boolean, Float, Float>>()
-    fun bands(faint: IntArray, ink: IntArray, across: Int, horizontal: Boolean) {
+    fun bands(faint: IntArray, ink: IntArray, slight: IntArray, across: Int, horizontal: Boolean) {
       val n = faint.size
       val margin = n * 3 / 100
       var i = margin
@@ -397,11 +448,17 @@ object BeautyAnalyzer {
         val start = i
         while (i < n - margin && faint[i] >= across * 0.28 && ink[i] <= across * 0.10) i++
         val len = i - start
-        if (len <= max(2, n / 50)) out.add(Triple(horizontal, (start + i) / 2f / n, max(1f, len / 2f) / n))
+        // a fold is soft shading wider than a printed rule, fading out at its sides (a ruled line
+        // or a table border has crisp edges)
+        fun shaded(k: Int) = k in 0 until n && faint[k] + slight[k] >= across * 0.25
+        val soft = shaded(start - 1) && shaded(i)
+        if (len >= max(3, n / 300) && len <= max(4, n / 50) && soft) {
+          out.add(Triple(horizontal, (start + i) / 2f / n, max(1f, len / 2f) / n))
+        }
       }
     }
-    bands(faintRow, inkRow, p.w, true)
-    bands(faintCol, inkCol, p.h, false)
+    bands(faintRow, inkRow, slightRow, p.w, true)
+    bands(faintCol, inkCol, slightCol, p.h, false)
     return out.take(6)
   }
 
@@ -476,11 +533,12 @@ object BeautyAnalyzer {
   }
 
   /** Grain / speckles on the paper */
-  fun noisy(p: Px, grid: PaperGrid): Boolean {
+  fun noisy(p: Px, grid: PaperGrid, protect: List<IBox> = emptyList()): Boolean {
     val paper = FloatArray(3)
     var flat = 0
     var grainy = 0
     for (y in 1 until p.h - 1 step 2) for (x in 1 until p.w - 1 step 2) {
+      if (protect.any { it.contains(x, y) }) continue // (a photo's texture is not grain)
       grid.at(x, y, paper)
       val pl = (paper[0] * 299 + paper[1] * 587 + paper[2] * 114) / 1000f
       val l = Px.lum(p.data[y * p.w + x])
@@ -498,10 +556,11 @@ object BeautyAnalyzer {
   }
 
   /** Faded ink: there is writing, but it is not much darker than the paper */
-  fun faded(p: Px, grid: PaperGrid): Boolean {
+  fun faded(p: Px, grid: PaperGrid, protect: List<IBox> = emptyList()): Boolean {
     val paper = FloatArray(3)
     val ratios = ArrayList<Float>()
     for (y in 0 until p.h step 2) for (x in 0 until p.w step 2) {
+      if (protect.any { it.contains(x, y) }) continue // (a photo's shades are not ink)
       grid.at(x, y, paper)
       val pl = max(1f, (paper[0] * 299 + paper[1] * 587 + paper[2] * 114) / 1000f)
       val q = Px.lum(p.data[y * p.w + x]) / pl

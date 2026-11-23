@@ -119,18 +119,20 @@ object BeautySteps {
   }
 
   /** Folds / creases: in each band, shading lighter than writing is brought to the paper's colour */
-  fun folds(p: Px, lines: List<FoldPx>, amount: Float) {
+  fun folds(p: Px, lines: List<FoldPx>, amount: Float, protect: List<IBox> = emptyList()) {
     if (amount <= 0f || lines.isEmpty()) return
     val grid = PaperGrid.of(p)
     val paper = FloatArray(3)
     for (f in lines) {
-      val from = max(0, f.at - f.half - 1)
-      val to = min(if (f.horizontal) p.h else p.w, f.at + f.half + 2)
+      // (with the fold's soft sides)
+      val from = max(0, f.at - 2 * f.half - 2)
+      val to = min(if (f.horizontal) p.h else p.w, f.at + 2 * f.half + 3)
       for (a in from until to) {
         val along = if (f.horizontal) p.w else p.h
         for (b in 0 until along) {
           val x = if (f.horizontal) b else a
           val y = if (f.horizontal) a else b
+          if (inAny(protect, x, y)) continue
           val i = y * p.w + x
           val c = p.data[i]
           grid.at(x, y, paper)
@@ -184,13 +186,13 @@ object BeautySteps {
    * Each pixel worked out from its 3 × 3 neighbourhood as it was before this pass (three rows kept
    * aside, so no full copy of the picture is needed).
    */
-  private inline fun pass3(p: Px, f: (x: Int, prev: IntArray, cur: IntArray, next: IntArray) -> Int) {
+  private inline fun pass3(p: Px, f: (x: Int, y: Int, prev: IntArray, cur: IntArray, next: IntArray) -> Int) {
     val w = p.w
     var prev = p.data.copyOfRange(0, w)
     var cur = p.data.copyOfRange(0, w)
     for (y in 0 until p.h) {
       val next = if (y + 1 < p.h) p.data.copyOfRange((y + 1) * w, (y + 2) * w) else cur
-      for (x in 0 until w) p.data[y * w + x] = f(x, prev, cur, next)
+      for (x in 0 until w) p.data[y * w + x] = f(x, y, prev, cur, next)
       prev = cur
       cur = next
     }
@@ -200,12 +202,16 @@ object BeautySteps {
    * Denoise, then sharpen (in this order: sharpening noise would make it worse). Lone dark
    * specks on paper are removed, flat areas smoothed, then the edges of writing are sharpened.
    */
-  fun clarity(p: Px, amount: Float) {
+  fun clarity(p: Px, amount: Float, protect: List<IBox> = emptyList()) {
     if (amount <= 0f) return
     val w = p.w
+    // the page's own ink level: a dot as dark as the writing is a decimal point, an i-dot,
+    // a Bangla dot — only fainter specks are dirt
+    val inkLevel = inkLevel(p)
     // 1. specks and flat-area noise
-    pass3(p) { x, prev, cur, next ->
+    pass3(p) { x, y, prev, cur, next ->
       val c = cur[x]
+      if (inAny(protect, x, y)) return@pass3 c
       val l = Px.lum(c)
       var sr = 0
       var sg = 0
@@ -223,8 +229,8 @@ object BeautySteps {
         if (nl > l + 50) lighter++
       }
       when {
-        // a lone dark speck: all 8 neighbours much lighter
-        lighter == 8 -> Px.rgb((sr - Px.r(c)) / 8, (sg - Px.g(c)) / 8, (sb - Px.b(c)) / 8)
+        // a lone speck fainter than the ink: all 8 neighbours much lighter
+        lighter == 8 && l > inkLevel + 40 -> Px.rgb((sr - Px.r(c)) / 8, (sg - Px.g(c)) / 8, (sb - Px.b(c)) / 8)
         // a flat area: its noise smoothed
         mx - mn < 24 -> {
           val k = amount
@@ -239,8 +245,9 @@ object BeautySteps {
     }
     // 2. sharpen the edges of writing (unsharp mask, 3 × 3)
     val a = 0.8f * amount
-    pass3(p) { x, prev, cur, next ->
+    pass3(p) { x, y, prev, cur, next ->
       val c = cur[x]
+      if (inAny(protect, x, y)) return@pass3 c
       var sr = 0
       var sg = 0
       var sb = 0
@@ -271,11 +278,12 @@ object BeautySteps {
    * already (a soft start, so the thin, light edge of a stroke is darkened a little and the stroke
    * never breaks); never lightened, the paper never touched; ink keeps its colour.
    */
-  fun ink(p: Px, amount: Float) {
+  fun ink(p: Px, amount: Float, protect: List<IBox> = emptyList()) {
     if (amount <= 0f) return
     val grid = PaperGrid.of(p)
     val bg = FloatArray(3)
     for (y in 0 until p.h) for (x in 0 until p.w) {
+      if (inAny(protect, x, y)) continue // (a portrait is never darkened)
       val i = y * p.w + x
       val c = p.data[i]
       grid.at(x, y, bg)
@@ -322,5 +330,49 @@ object BeautySteps {
     val out = IntArray(w * h)
     for (y in 0 until h) System.arraycopy(p.data, (b.top + y) * p.w + b.left, out, y * w, w)
     return Px(w, h, out)
+  }
+
+  /** The usual darkness of the writing: the middle of the ink pixels (Otsu's dark class), on a sample */
+  fun inkLevel(p: Px): Int {
+    val step = max(1, (p.w * p.h) / 200_000)
+    val hist = IntArray(256)
+    var i = 0
+    while (i < p.w * p.h) {
+      hist[Px.lum(p.data[i])]++
+      i += step
+    }
+    // Otsu on the sample
+    var total = 0.0
+    var sum = 0.0
+    for (t in 0 until 256) {
+      total += hist[t]
+      sum += t * hist[t].toDouble()
+    }
+    var sumB = 0.0
+    var wB = 0.0
+    var best = 0.0
+    var th = 128
+    for (t in 0 until 256) {
+      wB += hist[t]
+      if (wB == 0.0) continue
+      val wF = total - wB
+      if (wF == 0.0) break
+      sumB += t * hist[t]
+      val d = sumB / wB - (sum - sumB) / wF
+      val between = wB * wF * d * d
+      if (between > best) {
+        best = between
+        th = t
+      }
+    }
+    var n = 0
+    for (t in 0..th) n += hist[t]
+    if (n == 0) return 0
+    var acc = 0
+    for (t in 0..th) {
+      acc += hist[t]
+      if (acc * 2 >= n) return t
+    }
+    return th
   }
 }

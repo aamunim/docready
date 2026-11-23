@@ -253,7 +253,8 @@ class PageEditorState(
           }
           val shownGeo = g.asImageBitmap()
           val before = if (withBefore) {
-            PageRenderer.finish(g.copy(Bitmap.Config.ARGB_8888, true), r.copy(beautify = r.beautify?.pixelsOff())).asImageBitmap()
+            // the same framing without Beautify's clean-up
+            PageRenderer.finish(PageRenderer.geometry(src.copy(Bitmap.Config.ARGB_8888, true), r, beautyPixels = false), r).asImageBitmap()
           } else {
             null
           }
@@ -277,16 +278,34 @@ class PageEditorState(
   }
 
   /** A change to this page (pushed on its undo list; drags with the same [key] are one step) */
+  /**
+   * The rules every change goes through (also Beautify all): new corners / turn / angle reset
+   * Beautify (its boxes belong to the old framing) and erasing; a new Beautify framing (trim,
+   * upside down, straightening) resets erasing. Returns the page's recipe and a note, if any.
+   */
+  private fun ruled(old: PageRecipe, new: PageRecipe): Pair<PageRecipe, String?> {
+    var r = new
+    var note: String? = null
+    val userMoved = r.quad != old.quad || r.turn != old.turn || r.rotate != old.rotate
+    if (userMoved && old.beautify != null && r.beautify != null) {
+      r = r.copy(beautify = null)
+      note = "Beautify was reset because the corners, turn or angle changed: tap ✨ again (Undo brings it back)."
+    }
+    val beautyMoved = r.beautify?.sameGeometry(old.beautify) == false || (r.beautify == null && old.beautify?.hasGeometry == true)
+    // (Turn 90 carries erasing along itself: its strokes are already moved)
+    val turnedOnly = r.turn != old.turn && r.quad == old.quad && r.rotate == old.rotate && r.erase != old.erase
+    if (old.erase.isNotEmpty() && !turnedOnly && (r.quad != old.quad || r.rotate != old.rotate || beautyMoved)) {
+      r = r.copy(erase = emptyList())
+      note = (note?.let { "$it " } ?: "") + "Erasing was removed because the page moved under it (Undo brings it back)."
+    }
+    return r to note
+  }
+
   fun update(new: PageRecipe, key: String? = null) {
     val old = recipe
-    var r = new
     if (key == null || key != lastKey) notice = null // (an older note is about an older step)
-    // erasing is drawn on the straightened page: new corners or a new angle move everything under it
-    val beautyMoved = r.beautify?.sameGeometry(old.beautify) == false || (r.beautify == null && old.beautify?.hasGeometry == true)
-    if (old.erase.isNotEmpty() && (r.quad != old.quad || r.rotate != old.rotate || beautyMoved)) {
-      r = r.copy(erase = emptyList())
-      notice = "Erasing was removed because the corners or the angle changed (Undo brings it back)."
-    }
+    val (r, note) = ruled(old, new)
+    if (note != null) notice = note
     if (r == old) return
     if (key == null || key != lastKey) {
       undo.getOrPut(index) { ArrayList() }.add(old)
@@ -466,24 +485,28 @@ class PageEditorState(
             }
           }
           found[j] = res
-          val next = applyFound(recipes[j], res)
+          // the same rules as a change made by hand (erasing that no longer fits is removed)
+          val (next, _) = ruled(recipes[j], applyFound(recipes[j], res))
           if (next != recipes[j]) {
             undo.getOrPut(j) { ArrayList() }.add(recipes[j])
             redo[j]?.clear()
             recipes[j] = next
           }
         }
-        notes = found[index]?.notes ?: emptyList()
-        askAngle = found[index]?.askAngle
-        flags()
-        refresh()
         notice = "Every page was looked at; each got only the steps it needs."
       } catch (e: CancellationException) {
+        notice = "Beautify all stopped: the pages done so far keep their changes."
         throw e
       } catch (e: Throwable) {
         error = if (e is OutOfMemoryError) "Not enough memory for Beautify all." else e.message ?: "Beautify all stopped."
       } finally {
         beautifying = null
+        // finished or stopped: this page's view, notes and undo catch up
+        notes = found[index]?.notes ?: emptyList()
+        askAngle = found[index]?.askAngle
+        lastKey = null
+        flags()
+        refresh()
       }
     }
   }

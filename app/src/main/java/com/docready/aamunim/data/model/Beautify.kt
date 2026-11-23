@@ -28,18 +28,27 @@ data class FoldLine(val horizontal: Boolean, val at: Float, val half: Float)
 /**
  * ✨ Beautify for bad paper, part of a page's [PageRecipe] (never changes the source). Found by
  * analysing the page; each step is on when its value is above 0 (or its switch is on). Boxes and
- * lines are parts of the page after straightening, the upside-down turn and the border trim,
- * before the user's crop box — the same frame as erasing.
+ * lines are parts of the page as it was analysed: after the user's corners, turns and angle,
+ * before Beautify's own border trim, upside-down turn and straightening (so switching those never
+ * moves them). The clean-up runs in that frame, then the trim, turn and straightening.
+ * Content-changing finds — upside down, border, folds, edge marks — are only offered: they stay
+ * off until the user turns them on.
  */
 @Serializable
 data class BeautifyRecipe(
   val strength: BeautyStrength = BeautyStrength.MEDIUM,
   /** Text-line straightening, degrees (0 = off) */
   val deskew: Float = 0f,
-  /** The page was upside down */
+  /** The straightening the analysis found (to switch it back on) */
+  val foundDeskew: Float = 0f,
+  /** Turned upside down (only when the user agreed) */
   val flip: Boolean = false,
-  /** A black border cut away (parts of the page) */
+  /** The analysis thinks the page may be upside down: offered */
+  val maybeUpsideDown: Boolean = false,
+  /** A black border cut away (parts of the page; only when the user agreed) */
   val trim: CropRect? = null,
+  /** The uniform dark border the analysis found: offered, outlined */
+  val foundTrim: CropRect? = null,
   val glare: Float = 0f,
   val glareAreas: List<CropRect> = emptyList(),
   val stains: Float = 0f,

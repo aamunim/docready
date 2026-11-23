@@ -7,7 +7,6 @@ import com.docready.aamunim.data.model.CropRect
 import com.docready.aamunim.data.model.EdgeKind
 import com.docready.aamunim.data.model.EdgeMark
 import com.docready.aamunim.data.model.FoldLine
-import com.docready.aamunim.data.model.PageRecipe
 import com.docready.aamunim.imaging.beauty.BeautyAnalyzer
 import com.docready.aamunim.imaging.beauty.BeautySteps
 import com.docready.aamunim.imaging.beauty.FBox
@@ -62,13 +61,18 @@ object Beautifier {
     val recipe = BeautifyRecipe(
       strength = strength,
       deskew = f.deskew,
-      flip = f.flip,
-      trim = f.trim?.let(::box),
+      foundDeskew = f.deskew,
+      // turning the page over, cutting a border, flattening folds and painting over edge marks
+      // change what is on the page: offered (outlined), never done by themselves
+      flip = false,
+      maybeUpsideDown = f.maybeUpsideDown,
+      trim = null,
+      foundTrim = f.trim?.let(::box),
       glare = if (f.glare.isNotEmpty()) level else 0f,
       glareAreas = f.glare.map(::box),
       stains = if (f.stains) level else 0f,
       whiten = if (f.yellow) level else 0f,
-      folds = if (f.folds.isNotEmpty()) level else 0f,
+      folds = 0f,
       foldLines = f.folds.map { FoldLine(it.first, it.second, it.third) },
       // painted over only once the user has seen them outlined
       edges = false,
@@ -88,6 +92,8 @@ object Beautifier {
     )
     val notes = buildList {
       if (f.blurry) add("This page is blurry: rescan it for better quality.")
+      if (f.trim != null) add("A dark border is outlined: turn on “Trim black border” to cut it away.")
+      if (f.folds.isNotEmpty()) add("${f.folds.size} fold line(s) are outlined: turn on “Folds” to flatten them.")
       if (f.glareLoss) add("Glare: some of what is under the shine can't be brought back.")
       if (f.edges.isNotEmpty()) {
         val what = f.edges.map { it.first }.distinct().joinToString(", ") {
@@ -104,23 +110,15 @@ object Beautifier {
   }
 
   /**
-   * The clean-up steps on a finished-geometry page (after the user's crop box [crop]); boxes and
-   * lines are mapped from the uncropped frame. [src] may be used up.
+   * The clean-up steps on the page as Beautify analysed it (after the user's corners / turns /
+   * angle, before Beautify's own trim / turn / straightening), so its boxes fit directly.
+   * [src] may be used up.
    */
-  fun apply(src: Bitmap, r: PageRecipe): Bitmap {
-    val bt = r.beautify ?: return src
+  fun apply(src: Bitmap, bt: BeautifyRecipe): Bitmap {
     if (!bt.hasPixels) return src
     val b = DocTools.mutable(src)
     val p = toPx(b)
-    val crop = r.crop ?: CropRect(0f, 0f, 1f, 1f)
-    val cw = max(0.0001f, crop.width)
-    val ch = max(0.0001f, crop.height)
-    fun mapBox(c: CropRect): IBox = FBox(
-      (c.left - crop.left) / cw,
-      (c.top - crop.top) / ch,
-      (c.right - crop.left) / cw,
-      (c.bottom - crop.top) / ch,
-    ).toPx(p.w, p.h)
+    fun mapBox(c: CropRect): IBox = FBox(c.left, c.top, c.right, c.bottom).toPx(p.w, p.h)
     val protect = bt.protect.map(::mapBox)
     BeautySteps.glare(p, bt.glareAreas.map(::mapBox), bt.glare)
     BeautySteps.stains(p, bt.stains, protect)
@@ -128,18 +126,19 @@ object Beautifier {
     if (bt.folds > 0f) {
       val lines = bt.foldLines.map { f ->
         if (f.horizontal) {
-          FoldPx(true, (((f.at - crop.top) / ch) * p.h).roundToInt(), max(1, (f.half / ch * p.h).roundToInt()))
+          FoldPx(true, (f.at * p.h).roundToInt(), max(1, (f.half * p.h).roundToInt()))
         } else {
-          FoldPx(false, (((f.at - crop.left) / cw) * p.w).roundToInt(), max(1, (f.half / cw * p.w).roundToInt()))
+          FoldPx(false, (f.at * p.w).roundToInt(), max(1, (f.half * p.w).roundToInt()))
         }
       }
-      BeautySteps.folds(p, lines, bt.folds)
+      BeautySteps.folds(p, lines, bt.folds, protect)
     }
     if (bt.edges) {
       BeautySteps.edges(p, bt.edgeMarks.map { (if (it.kind == EdgeKind.HOLE) MarkShape.ELLIPSE else MarkShape.BOX) to mapBox(it.box) })
     }
-    BeautySteps.clarity(p, bt.clarity)
-    BeautySteps.ink(p, bt.ink)
+    // (photos, logos and stamps are never sharpened or darkened)
+    BeautySteps.clarity(p, bt.clarity, protect)
+    BeautySteps.ink(p, bt.ink, protect)
     b.setPixels(p.data, 0, p.w, 0, 0, p.w, p.h)
     return b
   }

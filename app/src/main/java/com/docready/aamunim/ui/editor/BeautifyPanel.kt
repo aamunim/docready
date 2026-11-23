@@ -32,6 +32,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +45,7 @@ import com.docready.aamunim.data.model.CropRect
 import com.docready.aamunim.data.model.EdgeKind
 import com.docready.aamunim.data.model.beautyBadge
 import com.docready.aamunim.ui.theme.EditorColors
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -55,7 +57,6 @@ private val Amber = androidx.compose.ui.graphics.Color(0xFFF2B36B)
 internal fun BeautifyControls(state: PageEditorState) {
   val r = state.recipe
   val b = r.beautify
-  val found = state.foundHere?.recipe
   val signature = state.mode == EditorMode.SIGNATURE
   Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState())) {
     val busy = state.beautifying
@@ -81,6 +82,12 @@ internal fun BeautifyControls(state: PageEditorState) {
         TextButton(onClick = { state.acceptAskAngle() }) { Text("Straighten it") }
       }
     }
+    if (b != null && b.maybeUpsideDown && !b.flip) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("This page may be upside down.", color = Amber, modifier = Modifier.weight(1f))
+        TextButton(onClick = { state.setBeauty { it.copy(flip = true) } }) { Text("Turn it") }
+      }
+    }
     for (n in state.notes) Text(n, color = Amber, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 2.dp))
     r.beautyBadge()?.let { Text(it, color = EditorColors.Accent, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(vertical = 4.dp)) }
 
@@ -97,20 +104,21 @@ internal fun BeautifyControls(state: PageEditorState) {
     } else {
       val level = b.strength.level
       if (!signature) {
-        Switchable("Straighten text", "${b.deskew}°", b.deskew != 0f, b.deskew != 0f || (found?.deskew ?: 0f) != 0f) { on ->
-          state.setBeauty { it.copy(deskew = if (on) found?.deskew ?: 0f else 0f) }
+        Switchable("Straighten text", "${b.deskew}°", b.deskew != 0f, b.deskew != 0f || b.foundDeskew != 0f) { on ->
+          state.setBeauty { it.copy(deskew = if (on) it.foundDeskew else 0f) }
         }
-        Switchable("Upside down", null, b.flip, b.flip || found?.flip == true) { on -> state.setBeauty { it.copy(flip = on) } }
-        Switchable("Trim black border", null, b.trim != null, b.trim != null || found?.trim != null) { on ->
-          state.setBeauty { it.copy(trim = if (on) found?.trim else null) }
+        Switchable("Turn upside down", null, b.flip, b.flip || b.maybeUpsideDown) { on -> state.setBeauty { it.copy(flip = on) } }
+        Switchable("Trim black border", if (b.trim == null) null else "Cut away", b.trim != null, b.trim != null || b.foundTrim != null) { on ->
+          state.setBeauty { it.copy(trim = if (on) it.foundTrim else null) }
         }
-        Graded("Glare (laminated card)", b.glare, b.glareAreas.isNotEmpty() || found?.glareAreas?.isNotEmpty() == true, level, state.index) { v ->
-          state.setBeauty { it.copy(glare = v, glareAreas = it.glareAreas.ifEmpty { found?.glareAreas ?: emptyList() }) }
+        Graded("Glare (laminated card)", b.glare, b.glareAreas.isNotEmpty(), level, state.index) { v ->
+          state.setBeauty { it.copy(glare = v) }
         }
         Graded("Stains / blotches", b.stains, true, level, state.index) { v -> state.setBeauty { it.copy(stains = v) } }
         Graded("Yellow paper → white", b.whiten, true, level, state.index) { v -> state.setBeauty { it.copy(whiten = v) } }
-        Graded("Folds / creases", b.folds, b.foldLines.isNotEmpty() || found?.foldLines?.isNotEmpty() == true, level, state.index) { v ->
-          state.setBeauty { it.copy(folds = v, foldLines = it.foldLines.ifEmpty { found?.foldLines ?: emptyList() }) }
+        // (outlined first; only flattened when turned on: a printed line must never vanish)
+        Graded("Folds / creases", b.folds, b.foldLines.isNotEmpty(), level, state.index) { v ->
+          state.setBeauty { it.copy(folds = v) }
         }
         if (b.foldLines.isNotEmpty()) {
           FilterChip(selected = state.showFolds, onClick = { state.showFolds = !state.showFolds }, label = { Text("Show folds") })
@@ -169,38 +177,84 @@ private fun Graded(title: String, value: Float, enabled: Boolean, level: Float, 
   }
 }
 
-/** A box / line on the uncropped page, as a point of the shown (cropped) page */
-private fun toShown(x: Float, y: Float, crop: CropRect?, f: Rect): Offset {
-  val c = crop ?: CropRect(0f, 0f, 1f, 1f)
-  val u = (x - c.left) / max(0.0001f, c.width)
-  val v = (y - c.top) / max(0.0001f, c.height)
+/**
+ * A point of the page as Beautify analysed it, on the shown page: through Beautify's border trim,
+ * upside-down turn and straightening, then the user's crop box. [aspect]: the framed page's
+ * width / height (straightening turns it in pixels, not in parts).
+ */
+private fun toShown(x0: Float, y0: Float, b: BeautifyRecipe, crop: CropRect?, aspect: Float, f: Rect): Offset {
+  var x = x0
+  var y = y0
+  b.trim?.let { t ->
+    x = (x - t.left) / max(0.0001f, t.width)
+    y = (y - t.top) / max(0.0001f, t.height)
+  }
+  if (b.flip) {
+    x = 1f - x
+    y = 1f - y
+  }
+  if (b.deskew != 0f) {
+    val rad = Math.toRadians(b.deskew.toDouble())
+    val c = kotlin.math.cos(rad).toFloat()
+    val s = kotlin.math.sin(rad).toFloat()
+    val dx = (x - 0.5f) * aspect
+    val dy = y - 0.5f
+    x = (dx * c - dy * s) / aspect + 0.5f
+    y = dx * s + dy * c + 0.5f
+  }
+  val k = crop ?: CropRect(0f, 0f, 1f, 1f)
+  val u = (x - k.left) / max(0.0001f, k.width)
+  val v = (y - k.top) / max(0.0001f, k.height)
   return Offset(f.left + u * f.width, f.top + v * f.height)
 }
 
-/** What Beautify will paint over (edge marks) and, on request, the folds it found */
+/** A box of the analysed page as a shape on the shown page (straightening may tilt it) */
+private fun shownBox(c: CropRect, b: BeautifyRecipe, crop: CropRect?, aspect: Float, f: Rect): Path = Path().apply {
+  val p0 = toShown(c.left, c.top, b, crop, aspect, f)
+  val p1 = toShown(c.right, c.top, b, crop, aspect, f)
+  val p2 = toShown(c.right, c.bottom, b, crop, aspect, f)
+  val p3 = toShown(c.left, c.bottom, b, crop, aspect, f)
+  moveTo(p0.x, p0.y)
+  lineTo(p1.x, p1.y)
+  lineTo(p2.x, p2.y)
+  lineTo(p3.x, p3.y)
+  close()
+}
+
+/**
+ * Outlined before anything is done: edge marks to paint over, fold lines to flatten, the border
+ * to cut (amber while offered, green once on); fold lines on request too.
+ */
 internal fun beautyOverlay(state: PageEditorState): (DrawScope.(Rect) -> Unit)? {
   val r = state.recipe
   val b: BeautifyRecipe = r.beautify ?: return null
-  val folds = state.showFolds
-  if (b.edgeMarks.isEmpty() && !(folds && b.foldLines.isNotEmpty())) return null
+  val folds = b.foldLines.isNotEmpty() && (b.folds <= 0f || state.showFolds)
+  val trim = b.trim == null && b.foundTrim != null
+  if (b.edgeMarks.isEmpty() && !folds && !trim) return null
+  val geo = state.geometryImage
+  val aspect = if (geo != null) geo.width.toFloat() / max(1, geo.height) else 1f
   return { f ->
+    val stroke = Stroke(width = 2.dp.toPx())
     for (m in b.edgeMarks) {
-      val a = toShown(m.box.left, m.box.top, r.crop, f)
-      val z = toShown(m.box.right, m.box.bottom, r.crop, f)
-      val stroke = Stroke(width = 2.dp.toPx())
       val color = if (b.edges) EditorColors.Accent else Amber
-      if (m.kind == EdgeKind.HOLE) {
-        drawOval(color, topLeft = a, size = Size(z.x - a.x, z.y - a.y), style = stroke)
+      if (m.kind == EdgeKind.HOLE && b.deskew == 0f) {
+        val a = toShown(m.box.left, m.box.top, b, r.crop, aspect, f)
+        val z = toShown(m.box.right, m.box.bottom, b, r.crop, aspect, f)
+        drawOval(color, topLeft = Offset(min(a.x, z.x), min(a.y, z.y)), size = Size(abs(z.x - a.x), abs(z.y - a.y)), style = stroke)
       } else {
-        drawRect(color, topLeft = a, size = Size(z.x - a.x, z.y - a.y), style = stroke)
+        drawPath(shownBox(m.box, b, r.crop, aspect, f), color, style = stroke)
       }
     }
     if (folds) {
       for (l in b.foldLines) {
-        val from = if (l.horizontal) toShown(0f, l.at, r.crop, f) else toShown(l.at, 0f, r.crop, f)
-        val to = if (l.horizontal) toShown(1f, l.at, r.crop, f) else toShown(l.at, 1f, r.crop, f)
-        drawLine(Amber, from, to, strokeWidth = 2.dp.toPx())
+        val from = if (l.horizontal) toShown(0f, l.at, b, r.crop, aspect, f) else toShown(l.at, 0f, b, r.crop, aspect, f)
+        val to = if (l.horizontal) toShown(1f, l.at, b, r.crop, aspect, f) else toShown(l.at, 1f, b, r.crop, aspect, f)
+        drawLine(if (b.folds > 0f) EditorColors.Accent else Amber, from, to, strokeWidth = 2.dp.toPx())
       }
+    }
+    if (trim) {
+      // what would be kept (the rest is the border)
+      b.foundTrim?.let { t -> drawPath(shownBox(t, b, r.crop, aspect, f), Amber, style = stroke) }
     }
   }
 }
