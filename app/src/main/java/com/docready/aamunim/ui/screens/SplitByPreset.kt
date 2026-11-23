@@ -207,7 +207,13 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
     if (big == null) return prepared(page, 2400)
     val fix = fixes[page]
     val q = fix?.quad?.takeIf { DocTools.isConvex(it) }
-    return DocTools.straighten(big, q, fix?.turn ?: 0)
+    return try {
+      DocTools.straighten(big, q, fix?.turn ?: 0)
+    } catch (_: OutOfMemoryError) {
+      // a turn / straightening needs a second big picture: the kept page instead
+      if (!big.isRecycled) big.recycle()
+      prepared(page, 2400)
+    }
   }
 
   // ---- the region of a photo / signature item, cut by hand
@@ -264,7 +270,7 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
   }
 
   fun clearCrop(item: Int) {
-    crops.remove(item)
+    dropCrop(item)
     results = null
   }
 
@@ -338,7 +344,7 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
           fixes[page] = PageFix(q, turn)
           fixedThumbs[page] = thumb
         }
-        assigned[page]?.let { crops.remove(it) }
+        assigned[page]?.let { dropCrop(it) }
         results = null
         cancelFix()
       } catch (e: Throwable) {
@@ -420,7 +426,7 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
         val h = item.heightPx ?: 300
         val notes = mutableListOf<String>()
         more?.let { notes.add(it) }
-        val piece = if (cut != null) cutOut(preparedForCut(its[0]), cut) else prepared(its[0], 2400)
+        val piece = if (cut != null) DocTools.scaleToMax(cutOut(preparedForCut(its[0]), cut), 2400) else prepared(its[0], 2400)
         val bg = (item.background ?: PhotoBackground.WHITE).argb
         // cut by hand: that part is the photo; else the face is found on the page
         val faces = if (cut == null) DocPhoto.findFaces(piece, notes) ?: emptyList() else emptyList()
@@ -450,7 +456,7 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
         val w = item.widthPx ?: 300
         val h = item.heightPx ?: 80
         val png = item.format == OutputFormat.PNG
-        val piece = if (cut != null) cutOut(preparedForCut(its[0]), cut) else prepared(its[0], 2400)
+        val piece = if (cut != null) DocTools.scaleToMax(cutOut(preparedForCut(its[0]), cut), 2400) else prepared(its[0], 2400)
         val ink = SignatureTools.inkOf(piece)
           ?: throw IllegalStateException("No signature found: cut the region closely around it.")
         val placed = SignatureTools.place(ink, w, h, png)
