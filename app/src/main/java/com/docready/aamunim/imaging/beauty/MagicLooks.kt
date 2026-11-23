@@ -41,6 +41,7 @@ object MagicLooks {
     val boxes = protect + photoAreas(p, bg)
     val feather = max(8, max(p.w, p.h) / 60)
     val c3 = FloatArray(3)
+    val which = IntArray(1)
     // a protected area keeps its own tones: the paper's tint balanced, and lifted by how much
     // darker the paper just around it is than the page's paper (a photo under a shadow does not sit
     // on a grey island); a photo's own paper estimate would be the photo itself
@@ -53,7 +54,8 @@ object MagicLooks {
       val nr = Px.r(c) / max(1f, c3[0])
       val ng = Px.g(c) / max(1f, c3[1])
       val nb = Px.b(c) / max(1f, c3[2])
-      val (wp, box) = protectWeight(boxes, x, y, feather)
+      val wp = protectWeight(boxes, x, y, feather, which)
+      val box = which[0]
       // what a protected area gets: the colours with the paper's tint balanced and its light evened
       val gain = if (box >= 0) gains[box] else 1f
       val er = Px.r(c) / max(1f, paper[0]) * 255f * gain
@@ -94,11 +96,15 @@ object MagicLooks {
     BeautySteps.clarity(p, 0.45f, boxes, flatRange = 10)
   }
 
-  /** 1 inside a protected box, fading to 0 over [feather] pixels outside it; and which box (-1: none) */
-  private fun protectWeight(boxes: List<IBox>, x: Int, y: Int, feather: Int): Pair<Float, Int> {
+  /**
+   * 1 inside a protected box, fading to 0 over [feather] pixels outside it; the box (-1: none) is
+   * written to [which][0] (no allocation per pixel)
+   */
+  private fun protectWeight(boxes: List<IBox>, x: Int, y: Int, feather: Int, which: IntArray): Float {
     var w = 0f
-    var which = -1
-    for ((k, b) in boxes.withIndex()) {
+    which[0] = -1
+    for (k in boxes.indices) {
+      val b = boxes[k]
       val dx = max(0, max(b.left - x, x - (b.right - 1)))
       val dy = max(0, max(b.top - y, y - (b.bottom - 1)))
       val d = max(dx, dy)
@@ -106,11 +112,11 @@ object MagicLooks {
       val v = 1f - Px.smoothstep(0f, feather.toFloat(), d.toFloat())
       if (v > w) {
         w = v
-        which = k
+        which[0] = k
       }
       if (w >= 1f) break
     }
-    return w to which
+    return w
   }
 
   /**
