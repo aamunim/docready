@@ -27,6 +27,7 @@ data class Student(
   val name: String,
   val roll: String? = null,
   val dob: String? = null,
+  val registration: String? = null,
   val notes: String? = null,
   val presetId: String? = null,
   val files: List<StudentFile> = emptyList(),

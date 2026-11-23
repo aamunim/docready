@@ -172,6 +172,7 @@ fun StudentEditScreen(id: String, onBack: () -> Unit, onSaved: (String) -> Unit)
   var name by rememberSaveable(id) { mutableStateOf(existing?.name ?: "") }
   var roll by rememberSaveable(id) { mutableStateOf(existing?.roll ?: "") }
   var dob by rememberSaveable(id) { mutableStateOf(existing?.dob ?: "") }
+  var registration by rememberSaveable(id) { mutableStateOf(existing?.registration ?: "") }
   var notes by rememberSaveable(id) { mutableStateOf(existing?.notes ?: "") }
   var presetId by rememberSaveable(id) { mutableStateOf(existing?.presetId) }
   var error by remember { mutableStateOf<String?>(null) }
@@ -187,6 +188,7 @@ fun StudentEditScreen(id: String, onBack: () -> Unit, onSaved: (String) -> Unit)
         name = name.trim().take(80),
         roll = roll.trim().take(40).ifEmpty { null },
         dob = dob.trim().take(20).ifEmpty { null },
+        registration = registration.trim().take(40).ifEmpty { null },
         notes = notes.trim().take(500).ifEmpty { null },
         presetId = presetId,
       ),
@@ -204,7 +206,8 @@ fun StudentEditScreen(id: String, onBack: () -> Unit, onSaved: (String) -> Unit)
       verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
       OutlinedTextField(name, { name = it.take(80) }, label = { Text("Name (any script)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-      OutlinedTextField(roll, { roll = it.take(40) }, label = { Text("Roll / registration (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+      OutlinedTextField(roll, { roll = it.take(40) }, label = { Text("Roll (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+      OutlinedTextField(registration, { registration = it.take(40) }, label = { Text("Registration no. (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
       OutlinedTextField(dob, { dob = it.take(20) }, label = { Text("Date of birth (optional)") }, placeholder = { Text("dd-mm-yyyy") }, singleLine = true, modifier = Modifier.fillMaxWidth())
       OutlinedTextField(notes, { notes = it.take(500) }, label = { Text("Notes (optional)") }, modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp))
       SectionLabel("Form preset (the checklist)")
@@ -282,7 +285,7 @@ fun StudentScreen(
       DocTopBar(
         s.name,
         onBack,
-        subtitle = listOfNotNull(s.roll?.let { "Roll $it" }, s.dob?.let { "Born $it" }).joinToString(" · ").ifEmpty { null },
+        subtitle = listOfNotNull(s.roll?.let { "Roll $it" }, s.registration?.let { "Reg $it" }, s.dob?.let { "Born $it" }).joinToString(" · ").ifEmpty { null },
         actions = {
           IconButton(onClick = onEdit) { Icon(AppIcons.Edit, contentDescription = "Edit student") }
           IconButton(onClick = { confirmDelete = true }) { Icon(AppIcons.Delete, contentDescription = "Delete student") }

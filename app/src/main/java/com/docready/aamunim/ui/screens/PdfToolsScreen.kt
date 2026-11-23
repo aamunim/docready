@@ -7,6 +7,11 @@ import com.docready.aamunim.data.DraftPage
 import com.docready.aamunim.data.DraftRepository
 import com.docready.aamunim.data.model.title
 import com.docready.aamunim.ui.components.DraftOffer
+import com.docready.aamunim.ui.components.FactChips
+import com.docready.aamunim.ui.components.SearchableSwitch
+import com.docready.aamunim.imaging.Fact
+import com.docready.aamunim.imaging.Ocr
+import com.docready.aamunim.imaging.OcrWord
 import com.docready.aamunim.ui.components.NormBox
 import com.docready.aamunim.docReady
 import kotlinx.coroutines.delay
@@ -196,6 +201,13 @@ class PdfToolsViewModel(
   var mode by mutableStateOf(startMode)
   val pages = mutableStateListOf<PdfPage>()
   var maxKbText by mutableStateOf(forItem?.maxKb?.toString() ?: "")
+
+  /** A searchable PDF: the pages' English text (OCR) as an invisible layer (merge / compress) */
+  var searchable by mutableStateOf(false)
+
+  /** What the pages say about the student (name, roll…), offered as chips after making */
+  var facts by mutableStateOf<List<Fact>>(emptyList())
+    private set
   var busy by mutableStateOf<String?>(null)
   var result by mutableStateOf<FilesResult?>(null)
   var error by mutableStateOf<String?>(null)
@@ -479,14 +491,18 @@ class PdfToolsViewModel(
     val original = singlePdf?.takeIf { m == PdfMode.COMPRESS && !pagesChanged && !userEdited }
     val edits = chosen.map { recipes[it] ?: PageRecipe.Plain }
     val base = FileNames.safeBase(firstName ?: "document")
+    val ocr = searchable && m != PdfMode.ID_CARD
+    val texts = ArrayList<String>()
     viewModelScope.launch {
       busy = "Making the PDF…"
       error = null
+      facts = emptyList()
       try {
         result = withContext(Dispatchers.Default) {
           val maxBytes = kb?.let { it * 1024L }
           val sourcePages: List<File>
           val name: String
+          val words = if (ocr) ArrayList<List<OcrWord>>() else null
           if (m == PdfMode.ID_CARD && f != null && b != null) {
             val fb = DocTools.load(ctx, Uri.fromFile(f.file(ctx)), 1600)
             val bb = DocTools.load(ctx, Uri.fromFile(b.file(ctx)), 1600)
@@ -496,7 +512,8 @@ class PdfToolsViewModel(
             sourcePages = listOf(DocTools.keepPage(ctx, page))
             name = "nid_both_sides.pdf"
           } else {
-            val keepAsIs = original != null && maxBytes != null && original.length() <= maxBytes
+            // (a searchable PDF is always made again: the original has no text layer of this app's)
+            val keepAsIs = original != null && maxBytes != null && original.length() <= maxBytes && !ocr
             // the full pages are made now, one at a time (not when the PDF was opened)
             sourcePages = if (keepAsIs) {
               emptyList()
@@ -510,7 +527,14 @@ class PdfToolsViewModel(
                 } else {
                   listOf(PdfTools.LONG_DOC_SIDE, PdfTools.PAGE_LONG_SIDE)
                 }
-                DocTools.keepPage(ctx, PdfTools.atBestSize(sides) { side -> p.rendered(ctx, edits[i], side) })
+                val b = PdfTools.atBestSize(sides) { side -> p.rendered(ctx, edits[i], side) }
+                if (words != null) {
+                  withContext(Dispatchers.Main) { busy = "Reading the text of page ${i + 1} of ${chosen.size}…" }
+                  val read = Ocr.read(b)
+                  words.add(read.words)
+                  if (texts.size < 3) texts.add(read.text)
+                }
+                DocTools.keepPage(ctx, b)
               }
             }
             withContext(Dispatchers.Main) { busy = "Making the PDF…" }
@@ -522,15 +546,15 @@ class PdfToolsViewModel(
           val fits: Boolean
           val previewImg = sourcePages.firstOrNull()?.let { DocTools.thumbnail(it, 600)?.asImageBitmap() } ?: chosen.firstOrNull()?.thumb
           try {
-            if (original != null && maxBytes != null && original.length() <= maxBytes) {
+            if (original != null && maxBytes != null && original.length() <= maxBytes && !ocr) {
               // already small enough: kept as it is (text stays text)
               original.copyTo(out, overwrite = true)
               size = out.length()
               fits = true
               notesOut = "This PDF is already under ${kb} KB: it is kept as it was."
             } else {
-              val (written, _, ok) = DocTools.fitPdf(sourcePages, maxBytes, out)
-              if (original != null && written >= original.length()) {
+              val (written, _, ok) = DocTools.fitPdf(sourcePages, maxBytes, out, words)
+              if (original != null && written >= original.length() && !ocr) {
                 // pictures would only make it heavier: the original is kept
                 original.copyTo(out, overwrite = true)
                 size = out.length()
@@ -556,6 +580,11 @@ class PdfToolsViewModel(
             previewImg,
             size, size, kb, fits, if (m == PdfMode.ID_CARD) 1 else chosen.size, OutputFormat.PDF, before,
           )
+        }
+        // made for a student: what the first page says about them (offered, never filled in)
+        if (studentId != null && m != PdfMode.ID_CARD && chosen.isNotEmpty()) {
+          if (texts.isEmpty()) busy = "Looking for the name and numbers…"
+          facts = Ocr.facts(texts) { chosen[0].rendered(ctx, edits[0], Ocr.MAX_SIDE) }
         }
       } catch (e: Throwable) {
         error = messageOf(e, "The PDF could not be made.")
@@ -595,6 +624,7 @@ class PdfToolsViewModel(
       listOfNotNull(
         "mode" to (if (mode == PdfMode.ID_CARD) PdfMode.MERGE else mode).name,
         "maxKb" to maxKbText,
+        "searchable" to searchable.toString(),
         splitPreset?.let { "splitPreset" to it.id },
         firstName?.let { "firstName" to it },
       ).toMap(),
@@ -606,6 +636,7 @@ class PdfToolsViewModel(
     val v = d.values
     v["mode"]?.let { m -> PdfMode.entries.firstOrNull { it.name == m }?.let { mode = it } }
     v["maxKb"]?.let { maxKbText = it }
+    v["searchable"]?.toBooleanStrictOrNull()?.let { searchable = it }
     v["firstName"]?.let { if (firstName == null) firstName = it }
     busy = "Opening your pages…"
     try {
@@ -806,6 +837,7 @@ fun PdfToolsScreen(
         VSpace(12)
         FilesResultCard(result)
         Text(result.files[0].name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+        if (studentId != null) FactChips(studentId, vm.facts)
       } else if (vm.mode == PdfMode.SPLIT) {
         SplitTool(
           vm.split,
@@ -844,7 +876,7 @@ private fun PagesTool(vm: PdfToolsViewModel, addFiles: () -> Unit) {
         "at lower quality and size until the PDF fits."
     } else {
       "Add PDFs and photos, put the pages in order, remove what is not needed, then make one PDF. " +
-        "Pages are saved as pictures (text in them can't be selected)."
+        "Pages are saved as pictures; turn on Searchable PDF to keep their English text selectable."
     },
     style = MaterialTheme.typography.bodyMedium,
     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -886,6 +918,10 @@ private fun PagesTool(vm: PdfToolsViewModel, addFiles: () -> Unit) {
           IconButton(onClick = { vm.remove(i) }, enabled = vm.busy == null) { Icon(AppIcons.Delete, contentDescription = "Remove page") }
         }
       }
+    }
+    SearchableSwitch(vm.searchable) {
+      vm.searchable = it
+      vm.result = null
     }
     SectionLabel("Size limit")
     NumberField(

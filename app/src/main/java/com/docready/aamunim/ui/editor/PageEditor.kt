@@ -79,6 +79,8 @@ import com.docready.aamunim.imaging.BeautyResult
 import com.docready.aamunim.imaging.Beautifier
 import com.docready.aamunim.imaging.DocTools
 import com.docready.aamunim.imaging.PageRenderer
+import com.docready.aamunim.imaging.Ocr
+import com.docready.aamunim.ui.components.TextSheet
 import com.docready.aamunim.ui.components.AppIcons
 import com.docready.aamunim.ui.components.CropBox
 import com.docready.aamunim.ui.components.NormBox
@@ -205,6 +207,7 @@ class PageEditorState(
 
   fun open(i: Int) {
     if (i !in pages.indices) return
+    if (i != index) stopText()
     index = i
     lastKey = null
     notice = null
@@ -622,9 +625,57 @@ class PageEditorState(
     setBeauty { it.copy(deskew = a, foundDeskew = a) }
   }
 
-  fun done() = onDone(recipes.toList())
+  // ---- Text: the page's English text (OCR), as it looks with its edits
+  /** The text read from the page ("" = none found), shown in a sheet; null = no sheet */
+  var pageText by mutableStateOf<String?>(null)
+    private set
+  var reading by mutableStateOf(false)
+    private set
+  private var textJob: Job? = null
 
-  fun close() = onClose()
+  fun readText() {
+    textJob?.cancel()
+    val i = index
+    val r = recipes[i]
+    textJob = scope.launch {
+      reading = true
+      try {
+        val page = withContext(Dispatchers.Default) {
+          // (straightening from corners takes a little more of the photo than the page it gives)
+          val b = pages[i].load(if (r.quad != null) Ocr.MAX_SIDE + 600 else Ocr.MAX_SIDE)
+          PageRenderer.render(b, r, Ocr.MAX_SIDE)
+        }
+        val t = Ocr.read(page)
+        if (i == index) pageText = t.text
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Throwable) {
+        error = "The text could not be read: ${if (e is OutOfMemoryError) "not enough memory" else e.message ?: "unknown problem"}."
+      } finally {
+        reading = false
+      }
+    }
+  }
+
+  fun closeText() {
+    pageText = null
+  }
+
+  private fun stopText() {
+    textJob?.cancel()
+    textJob = null
+    pageText = null
+  }
+
+  fun done() {
+    stopText()
+    onDone(recipes.toList())
+  }
+
+  fun close() {
+    stopText()
+    onClose()
+  }
 
   companion object {
     /** The preview's longer side: about a phone screen */
@@ -676,6 +727,7 @@ fun PageEditorScreen(state: PageEditorState) {
         EditorTabs(state)
       }
     }
+    state.pageText?.let { TextSheet(it, onDismiss = { state.closeText() }) }
   }
 }
 
@@ -697,6 +749,13 @@ private fun EditorTopBar(state: PageEditorState) {
       IconButton(onClick = { state.open(state.index - 1) }, enabled = state.index > 0) { Icon(AppIcons.Back, contentDescription = "Previous page") }
       IconButton(onClick = { state.open(state.index + 1) }, enabled = state.index < state.pages.size - 1) {
         Icon(AppIcons.Forward, contentDescription = "Next page")
+      }
+    }
+    IconButton(onClick = { state.readText() }, enabled = !state.reading) {
+      if (state.reading) {
+        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+      } else {
+        Icon(AppIcons.TextIcon, contentDescription = "Text on this page (copy, share)", tint = EditorColors.Text)
       }
     }
     IconButton(onClick = { state.undo() }, enabled = state.canUndo) {

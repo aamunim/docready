@@ -65,6 +65,8 @@ import com.docready.aamunim.data.DraftPage
 import com.docready.aamunim.data.DraftRepository
 import com.docready.aamunim.data.model.title
 import com.docready.aamunim.ui.components.DraftOffer
+import com.docready.aamunim.ui.components.FactChips
+import com.docready.aamunim.ui.components.SearchableSwitch
 import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.data.model.OutputFormat
 import com.docready.aamunim.data.model.PageRecipe
@@ -78,6 +80,9 @@ import com.docready.aamunim.data.model.bytesText
 import com.docready.aamunim.docReady
 import com.docready.aamunim.imaging.DocTools
 import com.docready.aamunim.imaging.PdfTools
+import com.docready.aamunim.imaging.Fact
+import com.docready.aamunim.imaging.Ocr
+import com.docready.aamunim.imaging.OcrWord
 import com.docready.aamunim.imaging.Scanner
 import com.docready.aamunim.save.ReadyFile
 import com.docready.aamunim.ui.components.BeautyBadge
@@ -137,6 +142,13 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
   val pages = mutableStateListOf<Page>()
   var format by mutableStateOf(if (item?.format == OutputFormat.JPG) OutputFormat.JPG else OutputFormat.PDF)
   var maxKbText by mutableStateOf(item?.maxKb?.toString() ?: "")
+
+  /** A searchable PDF: the pages' English text (OCR) as an invisible layer */
+  var searchable by mutableStateOf(false)
+
+  /** What the pages say about the student (name, roll…), offered as chips after making */
+  var facts by mutableStateOf<List<Fact>>(emptyList())
+    private set
 
   /** The limits of a preset's document item, picked on this screen */
   fun applyItem(it: PresetItem) {
@@ -293,22 +305,34 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
     if (pages.isEmpty()) return
     val files = pages.toList()
     val asPdf = format == OutputFormat.PDF
+    val ocr = asPdf && searchable
     viewModelScope.launch {
       busy = if (asPdf) "Making the PDF…" else "Making the pictures…"
       error = null
+      facts = emptyList()
+      val texts = ArrayList<String>()
       try {
         result = withContext(Dispatchers.Default) {
           val maxBytes = kb?.let { it * 1024L }
           if (asPdf) {
-            // one page in memory at a time: cleaned, then kept as a file
-            val cleaned = files.map { f ->
-              DocTools.keepPage(ctx, prepared(f))
+            // one page in memory at a time: cleaned, (read,) then kept as a file
+            val words = if (ocr) ArrayList<List<OcrWord>>() else null
+            val cleaned = files.mapIndexed { i, f ->
+              val b = prepared(f)
+              if (words != null) {
+                withContext(Dispatchers.Main) { busy = "Reading the text of page ${i + 1} of ${files.size}…" }
+                val read = Ocr.read(b)
+                words.add(read.words)
+                texts.add(read.text)
+              }
+              DocTools.keepPage(ctx, b)
             }
+            if (words != null) withContext(Dispatchers.Main) { busy = "Making the PDF…" }
             val name = if (files.size == 1) "scan_1_page.pdf" else "scan_${files.size}_pages.pdf"
             val out = FileNames.outputFile(ctx, name)
             val previewImg = DocTools.thumbnail(cleaned[0], 600)?.asImageBitmap()
             val (size, _, fits) = try {
-              DocTools.fitPdf(cleaned, maxBytes, out)
+              DocTools.fitPdf(cleaned, maxBytes, out, words)
             } finally {
               cleaned.forEach { it.delete() } // (in the PDF now)
             }
@@ -339,6 +363,11 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
             )
           }
         }
+        // made for a student: what the first page says about them (offered, never filled in)
+        if (studentId != null) {
+          if (texts.isEmpty()) busy = "Looking for the name and numbers…"
+          facts = Ocr.facts(texts) { prepared(files[0]) }
+        }
       } catch (e: Throwable) {
         error = messageOf(e, "The document could not be made.")
       } finally {
@@ -346,6 +375,7 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
       }
     }
   }
+
 
   fun clearResult() {
     result = null
@@ -366,13 +396,14 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
     return Draft(
       draft.key, "scan", draftTitle, presetId, itemIndex, studentId,
       list.map { DraftPage(it.file.path, recipe = it.recipe, warning = it.warning, checkCorners = it.checkCorners) },
-      mapOf("format" to format.name, "maxKb" to maxKbText),
+      mapOf("format" to format.name, "maxKb" to maxKbText, "searchable" to searchable.toString()),
     )
   }
 
   private suspend fun restore(d: Draft): Boolean {
     d.values["format"]?.let { f -> OutputFormat.entries.firstOrNull { it.name == f }?.let { format = it } }
     d.values["maxKb"]?.let { maxKbText = it }
+    d.values["searchable"]?.toBooleanStrictOrNull()?.let { searchable = it }
     busy = "Opening your pages…"
     try {
       val back = withContext(Dispatchers.Default) {
@@ -540,6 +571,7 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
         for (f in result.files) {
           Text(f.name + " · " + bytesText(f.file.length()), style = MaterialTheme.typography.bodySmall)
         }
+        if (studentId != null) FactChips(studentId, vm.facts)
       } else {
         Row(verticalAlignment = Alignment.CenterVertically) {
           SectionLabel("${vm.pages.size} page${if (vm.pages.size == 1) "" else "s"} · tap a page to edit it", Modifier.weight(1f))
@@ -588,6 +620,7 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           modifier = Modifier.padding(top = 8.dp),
         )
+        if (vm.format == OutputFormat.PDF) SearchableSwitch(vm.searchable) { vm.searchable = it }
         if (vm.preset == null) PresetItemShortcut(ItemKind.DOCUMENT, { _, item -> vm.applyItem(item) }, onNewPreset)
         SectionLabel("Size limit")
         NumberField(
