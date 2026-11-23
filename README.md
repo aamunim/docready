@@ -4,7 +4,10 @@ A phone app (Android) that makes documents **ready to submit** to online forms, 
 phone, with no sign-in:
 
 - **Scan document**: Google's document scanner (edges, straightening, shadows), or photos of
-  papers → corners adjustable by hand, quarter turns, a warning on blurry / dark pages → one
+  papers → **Magic** by default (paper evened by an edge-aware estimate: hard shadows, gradients,
+  fold tents and soft creases removed without halos; paper to white with a soft knee; deeper ink,
+  colours and photos kept; light denoise and sharpening), pages kept at up to 3000 px (about
+  250 dpi) unless a KB limit needs less; a scanning animation while each page is cleaned → corners adjustable by hand, quarter turns, a warning on blurry / dark pages → one
   PDF or JPG pictures, optionally under a size limit (KB).
 - **Photo**: take or choose a photo → face found and centred (ML Kit face detection) →
   background White / Light blue / Grey / Keep (ML Kit subject segmentation) → exact W × H px
@@ -29,7 +32,7 @@ phone, with no sign-in:
   by sharing / opening it with DocReady (checked strictly: size cap, format mark, sane numbers).
 - **Page editor** (shared by Scan, PDF tools, Split, Photo, Signature and the signature's form
   page): pinch zoom, hold to compare; Crop (four corners with Find edges, free crop, fine
-  straighten ±15°, turn 90°), Clean (remove shadows, Original / Auto color / Grey / B&W /
+  straighten ±15°, turn 90°), Clean (remove shadows, Original / Magic / Magic B&W / Lighten / Auto color / Grey / B&W /
   Whiten, brightness, contrast), Erase (brush in paper colour or white); undo / redo, reset,
   apply the look to all pages. Edits are a per-page recipe: the preview is made at screen size,
   the full page from the untouched source only when files are made. New document pages start

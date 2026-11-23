@@ -1,5 +1,8 @@
 package com.docready.aamunim.ui.screens
 
+import kotlinx.coroutines.delay
+import com.docready.aamunim.ui.components.ScanAnimationCard
+import com.docready.aamunim.ui.components.ScanAnim
 import com.docready.aamunim.data.model.beautyBadge
 import android.app.Activity
 import android.app.Application
@@ -75,6 +78,7 @@ import com.docready.aamunim.intake.Intake
 import com.docready.aamunim.intake.IntakeTarget
 import com.docready.aamunim.intake.IncomingFile
 import com.docready.aamunim.save.ReadyFile
+import com.docready.aamunim.ui.components.animationsEnabled
 import com.docready.aamunim.ui.components.BeautyBadge
 import com.docready.aamunim.ui.components.AppIcons
 import com.docready.aamunim.ui.components.BottomActions
@@ -199,6 +203,11 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
   }
 
   /** Split by preset: the pages given out to a preset's items */
+  /** A photo being cleaned as it is added (the scanning animation) */
+  var anim by mutableStateOf<ScanAnim?>(null)
+    private set
+  private var animKey = 0
+
   /** Each page's edits (the page editor), shared with Split by preset */
   val recipes = mutableStateMapOf<PdfPage, PageRecipe>()
 
@@ -226,6 +235,7 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
       EditorMode.DOCUMENT,
       onDone = { done -> applyRecipes(list, done) },
       onClose = { editor = null },
+      animate = animationsEnabled(ctx),
     )
   }
 
@@ -302,9 +312,15 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
               }
             } else {
               // the tile shows the photo as it will come out (shadows removed, colour evened)
-              val shown = withContext(Dispatchers.Default) {
-                listThumb(PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), 400), PageRecipe.Document))
+              // the scanning animation sweeps over the photo while it is cleaned (Magic)
+              val raw = withContext(Dispatchers.Default) { DocTools.load(ctx, Uri.fromFile(f), 900).asImageBitmap() }
+              anim = ScanAnim(animKey++, raw, null, "Cleaning $name…")
+              val (shown, cleaned) = withContext(Dispatchers.Default) {
+                val c = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), 900), PageRecipe.Document)
+                listThumb(c.copy(Bitmap.Config.ARGB_8888, false)) to c.asImageBitmap()
               }
+              anim = anim?.copy(after = cleaned, done = true, label = "$name ready")
+              if (animationsEnabled(ctx)) delay(600)
               val page = PdfPage(shown, name, f.length(), f, -1)
               // a photo of paper: shadows removed, colour evened (changeable in the editor)
               recipes[page] = PageRecipe.Document
@@ -321,6 +337,7 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
         }
       } finally {
         busy = null
+        anim = null
       }
       val added = if (pages.size > before) pages.subList(before, pages.size).toList() else emptyList()
       if (problems.isNotEmpty()) error = problems.joinToString("\n")
@@ -644,6 +661,7 @@ fun PdfToolsScreen(onBack: () -> Unit, startMode: PdfMode = PdfMode.MERGE, onNew
           }
         }
       }
+      vm.anim?.let { ScanAnimationCard(it, Modifier.padding(top = 12.dp)) }
       // what is happening / what went wrong: near the top, where it is seen
       if (vm.busy != null) BusyRow(vm.busy ?: "")
       ErrorText(vm.error)

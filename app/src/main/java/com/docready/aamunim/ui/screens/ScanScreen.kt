@@ -1,5 +1,9 @@
 package com.docready.aamunim.ui.screens
 
+import kotlinx.coroutines.delay
+import com.docready.aamunim.ui.components.animationsEnabled
+import com.docready.aamunim.ui.components.ScanAnimationCard
+import com.docready.aamunim.ui.components.ScanAnim
 import com.docready.aamunim.data.model.beautyBadge
 import android.app.Activity
 import android.app.Application
@@ -135,6 +139,11 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
   var result by mutableStateOf<FilesResult?>(null)
   var error by mutableStateOf<String?>(null)
 
+  /** The page being cleaned right now, for the scanning animation (null = none) */
+  var anim by mutableStateOf<ScanAnim?>(null)
+    private set
+  private var animKey = 0
+
   /** The scanner's pages, copied in (they are added after the pages already there) */
   fun addScanned(uris: List<Uri>) = addPages(uris, photos = false)
 
@@ -147,10 +156,18 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
       busy = "Reading the pages…"
       error = null
       result = null
+      val list = uris.take(30)
+      val animated = animationsEnabled(ctx)
       try {
-        for (u in uris.take(30)) {
-          val page = withContext(Dispatchers.Default) {
-            val f = FileNames.copyIn(ctx, u, if (photos) "img" else "jpg")
+        for ((n, u) in list.withIndex()) {
+          // the raw page first: the scanning animation sweeps over it while it is cleaned
+          val (f, raw) = withContext(Dispatchers.Default) {
+            val file = FileNames.copyIn(ctx, u, if (photos) "img" else "jpg")
+            file to DocTools.load(ctx, Uri.fromFile(file), PREVIEW).asImageBitmap()
+          }
+          val label = if (list.size == 1) "Cleaning the page…" else "Cleaning page ${n + 1} of ${list.size}…"
+          anim = ScanAnim(animKey++, raw, null, label)
+          val (page, cleaned) = withContext(Dispatchers.Default) {
             val quad = if (photos) {
               val b = DocTools.load(ctx, Uri.fromFile(f), 1600)
               try {
@@ -161,16 +178,23 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
             } else {
               null
             }
-            // new document pages: shadows removed, colour evened (and the paper's corners on a photo)
+            // new document pages: Magic (and the paper's corners on a photo)
             val recipe = PageRecipe.Document.copy(quad = quad?.toList())
-            Page(f, pageThumb(f, recipe), recipe, qualityWarning(f), checkCorners = photos)
+            // the real result, small: the animation's reveal and the page's tile
+            val shown = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), PREVIEW), recipe)
+            val tile = DocTools.scaleToMax(shown.copy(Bitmap.Config.ARGB_8888, false), 240).asImageBitmap()
+            Page(f, tile, recipe, qualityWarning(f), checkCorners = photos) to shown.asImageBitmap()
           }
           pages.add(page)
+          anim = anim?.copy(after = cleaned, done = true, label = if (list.size == 1) "Page ready" else "Page ${n + 1} of ${list.size} ready")
+          // (a moment to see the reveal and the tick; none when animations are off)
+          if (animated) delay(650)
         }
       } catch (e: Throwable) {
         error = messageOf(e, "The pages could not be read.")
       } finally {
         busy = null
+        anim = null
       }
     }
   }
@@ -219,6 +243,7 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
       EditorMode.DOCUMENT,
       onDone = { recipes -> applyRecipes(list, recipes) },
       onClose = { editor = null },
+      animate = animationsEnabled(ctx),
     )
   }
 
@@ -407,6 +432,9 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
         .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
       val result = vm.result
+      vm.anim?.let {
+        ScanAnimationCard(it, Modifier.padding(bottom = 12.dp))
+      }
       if (vm.pages.isEmpty()) {
         Text(
           "Google's scanner finds the page edges, straightens them and removes shadows. " +
@@ -522,3 +550,5 @@ private fun PageNote(text: String) {
   )
 }
 
+/** The animation's page pictures: about a phone screen's width */
+private const val PREVIEW = 900

@@ -1,5 +1,8 @@
 package com.docready.aamunim.ui.editor
 
+import kotlinx.coroutines.delay
+import com.docready.aamunim.ui.components.ScanAnimationCard
+import com.docready.aamunim.ui.components.ScanAnim
 import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
@@ -117,6 +120,8 @@ class PageEditorState(
   val mode: EditorMode,
   private val onDone: (List<PageRecipe>) -> Unit,
   private val onClose: () -> Unit,
+  /** The phone's animations are on (else no pauses to show a reveal) */
+  private val animate: Boolean = true,
 ) {
   val recipes = mutableStateListOf<PageRecipe>().apply { addAll(pages.map { it.recipe }) }
   var index by mutableIntStateOf(start.coerceIn(0, max(0, pages.size - 1)))
@@ -448,6 +453,7 @@ class PageEditorState(
     beautifyJob?.cancel()
     beautifyJob = scope.launch {
       beautifying = "Looking at the page…"
+      startAnim(if (mode == EditorMode.SIGNATURE) "Boosting the ink…" else "Cleaning the page…")
       try {
         val res = withContext(Dispatchers.Default) {
           val page = analysable(src.copy(Bitmap.Config.ARGB_8888, true), r)
@@ -463,9 +469,12 @@ class PageEditorState(
         askAngle = res.askAngle
         update(applyFound(recipe, res))
         if (res.recipe.labels().isEmpty() && !res.shadow) notice = "This page looks fine: nothing to fix."
+        finishAnim("Page cleaned")
       } catch (e: CancellationException) {
+        anim = null
         throw e
       } catch (e: Throwable) {
+        anim = null
         error = if (e is OutOfMemoryError) "Not enough memory to look at this page." else e.message ?: "Beautify could not look at this page."
       } finally {
         // (a stopped job must not clear the progress of the one that replaced it)
@@ -483,14 +492,17 @@ class PageEditorState(
           beautifying = "Beautifying page ${j + 1} of ${pages.size}…"
           val r = recipes[j]
           val strength = r.beautify?.strength ?: BeautyStrength.MEDIUM
-          val res = withContext(Dispatchers.Default) {
+          val (res, raw) = withContext(Dispatchers.Default) {
             val page = analysable(pages[j].load(Beautifier.ANALYSIS_SIDE), r)
             try {
-              Beautifier.analyze(page, strength, mode == EditorMode.SIGNATURE)
+              // (the page as it is, for the scanning animation)
+              val shown = DocTools.scaleToMax(page.copy(Bitmap.Config.ARGB_8888, false), ANIM_SIDE).asImageBitmap()
+              Beautifier.analyze(page, strength, mode == EditorMode.SIGNATURE) to shown
             } finally {
               page.recycle()
             }
           }
+          anim = ScanAnim(animKey++, raw, null, "Beautifying page ${j + 1} of ${pages.size}…")
           found[j] = res
           // the same rules as a change made by hand (erasing that no longer fits is removed)
           val (next, _) = ruled(recipes[j], applyFound(recipes[j], res))
@@ -499,6 +511,13 @@ class PageEditorState(
             redo[j]?.clear()
             recipes[j] = next
           }
+          // the cleaned page revealed under the sweep, then the tick
+          val cleaned = withContext(Dispatchers.Default) {
+            PageRenderer.render(pages[j].load(ANIM_SIDE), recipes[j]).asImageBitmap()
+          }
+          anim = anim?.copy(after = cleaned, done = true, label = "Page ${j + 1} of ${pages.size} ready")
+          // (a moment to see it; never slowing a long document down)
+          if (animate && pages.size <= 20) delay(550)
         }
         notice = "Every page was looked at; each got only the steps it needs."
       } catch (e: CancellationException) {
@@ -509,6 +528,7 @@ class PageEditorState(
       } finally {
         // (a stopped job must not clear the progress of the one that replaced it)
         if (beautifyJob === coroutineContext[Job]) beautifying = null
+        anim = null
         // finished or stopped: this page's view, notes and undo catch up
         notes = found[index]?.notes ?: emptyList()
         askAngle = found[index]?.askAngle
@@ -517,6 +537,36 @@ class PageEditorState(
         refresh()
       }
     }
+  }
+
+  // ---- the scanning animation while a page is cleaned (Beautify, Magic)
+  var anim by mutableStateOf<ScanAnim?>(null)
+    private set
+  private var animKey = 0
+
+  /** The sweep starts over the page as it is shown now */
+  private fun startAnim(label: String) {
+    val shown = preview ?: source ?: return
+    anim = ScanAnim(animKey++, shown, null, label)
+  }
+
+  /** Once the new preview is made: the reveal, the tick, then the page */
+  private suspend fun finishAnim(label: String) {
+    if (anim == null) return
+    renderJob?.join()
+    val after = preview
+    anim = if (after != null) anim?.copy(after = after, done = true, label = label) else null
+    delay(if (animate) 900 else 300)
+    anim = null
+  }
+
+  /** A look chosen in the Clean tab; the Magic looks show the scanning animation while they run */
+  fun setLook(l: Look) {
+    if (l == recipe.look) return
+    val magic = l == Look.MAGIC || l == Look.MAGIC_BW || l == Look.LIGHTEN
+    if (magic) startAnim("Applying ${l.title}…")
+    update(recipe.copy(look = l))
+    if (magic) scope.launch { finishAnim("${l.title} applied") }
   }
 
   fun stopBeautify() {
@@ -563,6 +613,9 @@ class PageEditorState(
   companion object {
     /** The preview's longer side: about a phone screen */
     const val PREVIEW_SIDE = 1400
+
+    /** The animation's pages in Beautify all */
+    private const val ANIM_SIDE = 800
   }
 }
 
@@ -576,6 +629,11 @@ fun PageEditorScreen(state: PageEditorState) {
         EditorTopBar(state)
         Box(Modifier.weight(1f).fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
           EditorCanvas(state)
+          state.anim?.let {
+            Box(Modifier.fillMaxSize().background(EditorColors.Background.copy(alpha = 0.9f)), contentAlignment = Alignment.Center) {
+              ScanAnimationCard(it, height = 380, textColor = EditorColors.Text)
+            }
+          }
           if (state.working) {
             CircularProgressIndicator(
               modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).size(22.dp),
@@ -886,7 +944,7 @@ private fun CleanControls(state: PageEditorState) {
       Switch(checked = r.removeShadows, onCheckedChange = { state.update(r.copy(removeShadows = it)) })
     }
     Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-      for (l in Look.entries) FilterChip(selected = r.look == l, onClick = { state.update(r.copy(look = l)) }, label = { Text(l.title) })
+      for (l in Look.entries) FilterChip(selected = r.look == l, onClick = { state.setLook(l) }, label = { Text(l.title) })
     }
   }
   if (state.mode != EditorMode.SIGNATURE) {
