@@ -1,6 +1,8 @@
 package com.docready.aamunim.ui.screens
 
 import android.app.Application
+import android.content.ActivityNotFoundException
+import android.widget.Toast
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -431,6 +433,7 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
   val source = rememberImageSource { vm.setSource(it) }
   var saving by rememberSaveable { mutableStateOf(false) }
   var savingPage by rememberSaveable { mutableStateOf(false) }
+  val context = LocalContext.current
   val openForm = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) vm.openForm(uri) }
   val intake by Intake.request.collectAsState()
   LaunchedEffect(intake) {
@@ -522,7 +525,13 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
           VSpace(10)
           ImageResultCard(r, fromPreset = vm.preset != null)
           if (vm.stale && vm.busy == null) StaleNote("Something changed: tap “Make again” to update the signature.")
-          if (!vm.stale) PlaceOnPage(vm, { openForm.launch(arrayOf("image/*", "application/pdf")) }, { savingPage = true })
+          if (!vm.stale) PlaceOnPage(vm, {
+            try {
+              openForm.launch(arrayOf("image/*", "application/pdf"))
+            } catch (_: ActivityNotFoundException) {
+              Toast.makeText(context, "No file picker found on this phone.", Toast.LENGTH_LONG).show()
+            }
+          }, { savingPage = true })
         }
       }
       if (vm.busy != null) BusyRow(vm.busy ?: "")

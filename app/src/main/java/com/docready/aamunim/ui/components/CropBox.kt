@@ -2,7 +2,9 @@ package com.docready.aamunim.ui.components
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,10 +13,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -24,6 +23,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -100,8 +100,7 @@ fun CropBox(
   val change by rememberUpdatedState(onBoxChange)
   val keep by rememberUpdatedState(fixedRatio)
   val lineColor = MaterialTheme.colorScheme.primary
-  // 0-3: a corner (top-left, top-right, bottom-right, bottom-left), 4: the whole box, -1: nothing
-  var mode by remember { mutableIntStateOf(-1) }
+  // a touch: 0-3 a corner (top-left, top-right, bottom-right, bottom-left), 4 the whole box
   Box(modifier.fillMaxWidth().heightIn(max = maxHeight.dp), contentAlignment = Alignment.Center) {
     Box(Modifier.aspectRatio(ratio)) {
       Image(image, contentDescription = "Picture", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
@@ -110,50 +109,51 @@ fun CropBox(
           .fillMaxSize()
           .pointerInput(Unit) {
             val minPart = 0.06f
-            detectDragGestures(
-              onDragStart = { start ->
-                val w = size.width.toFloat()
-                val h = size.height.toFloat()
-                val b = current
-                val corners = listOf(
-                  Offset(b.left * w, b.top * h),
-                  Offset(b.right * w, b.top * h),
-                  Offset(b.right * w, b.bottom * h),
-                  Offset(b.left * w, b.bottom * h),
-                )
-                val near = corners.indices.minByOrNull { hypot(corners[it].x - start.x, corners[it].y - start.y) } ?: 0
-                val dist = hypot(corners[near].x - start.x, corners[near].y - start.y)
-                val reach = 48.dp.toPx()
-                mode = when {
-                  dist <= reach -> near
-                  start.x in b.left * w..b.right * w && start.y in b.top * h..b.bottom * h -> 4
-                  else -> -1
-                }
-              },
-              onDragEnd = { mode = -1 },
-              onDragCancel = { mode = -1 },
-              onDrag = { pointer, drag ->
-                pointer.consume()
-                val dx = drag.x / size.width
-                val dy = drag.y / size.height
-                val b = current
-                val fixed = keep
-                val next = when {
-                  mode in 0..3 && fixed != null -> resizeFixed(b, mode, dx, dy, fixed, minPart)
-                  mode == 0 -> b.copy(left = (b.left + dx).coerceIn(0f, b.right - minPart), top = (b.top + dy).coerceIn(0f, b.bottom - minPart))
-                  mode == 1 -> b.copy(right = (b.right + dx).coerceIn(b.left + minPart, 1f), top = (b.top + dy).coerceIn(0f, b.bottom - minPart))
-                  mode == 2 -> b.copy(right = (b.right + dx).coerceIn(b.left + minPart, 1f), bottom = (b.bottom + dy).coerceIn(b.top + minPart, 1f))
-                  mode == 3 -> b.copy(left = (b.left + dx).coerceIn(0f, b.right - minPart), bottom = (b.bottom + dy).coerceIn(b.top + minPart, 1f))
-                  mode == 4 -> {
-                    val mx = dx.coerceIn(-b.left, 1f - b.right)
-                    val my = dy.coerceIn(-b.top, 1f - b.bottom)
-                    NormBox(b.left + mx, b.top + my, b.right + mx, b.bottom + my)
+            // only a touch on a corner or inside the box is ours: elsewhere the page scrolls
+            awaitEachGesture {
+              val down = awaitFirstDown(requireUnconsumed = false)
+              val w = size.width.toFloat()
+              val h = size.height.toFloat()
+              val b0 = current
+              val corners = listOf(
+                Offset(b0.left * w, b0.top * h),
+                Offset(b0.right * w, b0.top * h),
+                Offset(b0.right * w, b0.bottom * h),
+                Offset(b0.left * w, b0.bottom * h),
+              )
+              val start = down.position
+              val near = corners.indices.minByOrNull { hypot(corners[it].x - start.x, corners[it].y - start.y) } ?: 0
+              val dist = hypot(corners[near].x - start.x, corners[near].y - start.y)
+              val mode = when {
+                dist <= 48.dp.toPx() -> near
+                start.x in b0.left * w..b0.right * w && start.y in b0.top * h..b0.bottom * h -> 4
+                else -> -1
+              }
+              if (mode >= 0) {
+                down.consume()
+                drag(down.id) { pointer ->
+                  val delta = pointer.positionChange()
+                  pointer.consume()
+                  val dx = delta.x / w
+                  val dy = delta.y / h
+                  val b = current
+                  val fixed = keep
+                  val next = when {
+                    mode in 0..3 && fixed != null -> resizeFixed(b, mode, dx, dy, fixed, minPart)
+                    mode == 0 -> b.copy(left = (b.left + dx).coerceIn(0f, b.right - minPart), top = (b.top + dy).coerceIn(0f, b.bottom - minPart))
+                    mode == 1 -> b.copy(right = (b.right + dx).coerceIn(b.left + minPart, 1f), top = (b.top + dy).coerceIn(0f, b.bottom - minPart))
+                    mode == 2 -> b.copy(right = (b.right + dx).coerceIn(b.left + minPart, 1f), bottom = (b.bottom + dy).coerceIn(b.top + minPart, 1f))
+                    mode == 3 -> b.copy(left = (b.left + dx).coerceIn(0f, b.right - minPart), bottom = (b.bottom + dy).coerceIn(b.top + minPart, 1f))
+                    else -> {
+                      val mx = dx.coerceIn(-b.left, 1f - b.right)
+                      val my = dy.coerceIn(-b.top, 1f - b.bottom)
+                      NormBox(b.left + mx, b.top + my, b.right + mx, b.bottom + my)
+                    }
                   }
-                  else -> null
+                  change(next)
                 }
-                if (next != null) change(next)
-              },
-            )
+              }
+            }
           },
       ) {
         val w = size.width
@@ -199,7 +199,6 @@ fun QuadBox(image: ImageBitmap, quad: FloatArray, onQuadChange: (FloatArray) -> 
   val current by rememberUpdatedState(quad)
   val change by rememberUpdatedState(onQuadChange)
   val lineColor = MaterialTheme.colorScheme.primary
-  var corner by remember { mutableIntStateOf(-1) }
   Box(modifier.fillMaxWidth().heightIn(max = 460.dp), contentAlignment = Alignment.Center) {
     Box(Modifier.aspectRatio(ratio)) {
       Image(image, contentDescription = "Page", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
@@ -207,28 +206,27 @@ fun QuadBox(image: ImageBitmap, quad: FloatArray, onQuadChange: (FloatArray) -> 
         Modifier
           .fillMaxSize()
           .pointerInput(Unit) {
-            detectDragGestures(
-              onDragStart = { start ->
-                val w = size.width.toFloat()
-                val h = size.height.toFloat()
-                val q = current
-                val near = (0 until 4).minByOrNull { hypot(q[it * 2] * w - start.x, q[it * 2 + 1] * h - start.y) } ?: 0
-                val dist = hypot(q[near * 2] * w - start.x, q[near * 2 + 1] * h - start.y)
-                corner = if (dist <= 56.dp.toPx()) near else -1
-              },
-              onDragEnd = { corner = -1 },
-              onDragCancel = { corner = -1 },
-              onDrag = { pointer, drag ->
-                val c = corner
-                if (c >= 0) {
+            // only a touch near a corner is ours: elsewhere the page scrolls
+            awaitEachGesture {
+              val down = awaitFirstDown(requireUnconsumed = false)
+              val w = size.width.toFloat()
+              val h = size.height.toFloat()
+              val q0 = current
+              val start = down.position
+              val near = (0 until 4).minByOrNull { hypot(q0[it * 2] * w - start.x, q0[it * 2 + 1] * h - start.y) } ?: 0
+              val dist = hypot(q0[near * 2] * w - start.x, q0[near * 2 + 1] * h - start.y)
+              if (dist <= 56.dp.toPx()) {
+                down.consume()
+                drag(down.id) { pointer ->
+                  val delta = pointer.positionChange()
                   pointer.consume()
                   val q = current.copyOf()
-                  q[c * 2] = (q[c * 2] + drag.x / size.width).coerceIn(0f, 1f)
-                  q[c * 2 + 1] = (q[c * 2 + 1] + drag.y / size.height).coerceIn(0f, 1f)
+                  q[near * 2] = (q[near * 2] + delta.x / w).coerceIn(0f, 1f)
+                  q[near * 2 + 1] = (q[near * 2 + 1] + delta.y / h).coerceIn(0f, 1f)
                   change(q)
                 }
-              },
-            )
+              }
+            }
           },
       ) {
         val w = size.width

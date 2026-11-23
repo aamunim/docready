@@ -230,8 +230,12 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
   fun findEdges() {
     val b = editBitmap ?: return
     viewModelScope.launch {
-      val q = withContext(Dispatchers.Default) { DocTools.findPaper(b) }
-      if (q != null) editQuad = q else error = "No clear paper edges found: drag the corners by hand."
+      try {
+        val q = withContext(Dispatchers.Default) { DocTools.findPaper(b) }
+        if (q != null) editQuad = q else error = "No clear paper edges found: drag the corners by hand."
+      } catch (e: Throwable) {
+        error = messageOf(e, "The paper's edges could not be found: drag the corners by hand.")
+      }
     }
   }
 

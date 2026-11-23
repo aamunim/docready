@@ -139,7 +139,8 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
     set(v) {
       widthState = v
       edited()
-      manual = null // a crop chosen by hand had the old shape
+      manual = null
+      refitAdjust() // a crop chosen by hand had the old shape
     }
   var heightText: String
     get() = heightState
@@ -147,6 +148,7 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
       heightState = v
       edited()
       manual = null
+      refitAdjust()
     }
 
   // ---- the crop by hand (after the face crop): a box of the photo's shape on the source photo
@@ -188,8 +190,21 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
     adjusting = false
   }
 
+  /** The box being moved keeps the asked shape when the size is changed meanwhile */
+  private fun refitAdjust() {
+    if (!adjusting) return
+    val r = boxRatio()
+    if (r == null) adjusting = false else adjustBox = fitRatio(adjustBox, r)
+  }
+
   fun applyAdjust() {
-    manual = adjustBox
+    val r = boxRatio()
+    if (r == null) {
+      error = "Write the width and height first."
+      return
+    }
+    // (always the asked shape: the photo is never stretched)
+    manual = fitRatio(adjustBox, r)
     adjusting = false
     edited()
     process()

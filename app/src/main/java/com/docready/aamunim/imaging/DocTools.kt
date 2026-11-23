@@ -97,6 +97,7 @@ object DocTools {
     return out
   }
 
+  /** [src] at most [maxSide] on its longer side; [src] is used up (recycled) when a smaller copy is made */
   fun scaleToMax(src: Bitmap, maxSide: Int): Bitmap {
     val side = max(src.width, src.height)
     if (side <= maxSide) return src
@@ -405,7 +406,13 @@ object DocTools {
    * null: nothing clear (a scan, a clean page, a light table).
    */
   fun findPaper(src: Bitmap): FloatArray? {
-    val small = scaleToMax(src, 320)
+    // a small copy of its own (scaleToMax would recycle the caller's picture, which may be on screen)
+    val k = 320f / max(src.width, src.height)
+    val small = if (k < 1f) {
+      Bitmap.createScaledBitmap(src, max(1, (src.width * k).roundToInt()), max(1, (src.height * k).roundToInt()), true)
+    } else {
+      src
+    }
     val w = small.width
     val h = small.height
     val raw = IntArray(w * h)
