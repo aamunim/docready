@@ -30,7 +30,8 @@ data class EraseStroke(val points: List<Float>, val radius: Float, val white: Bo
 
 /**
  * What was done to a page, kept apart from the page itself (the source is never changed):
- * corners → quarter turns → fine rotation → crop box → shadows / look / light → erasing.
+ * corners → quarter turns → fine rotation → Beautify's straightening / border → crop box →
+ * Beautify's clean-up → shadows / look / light → erasing.
  * The preview and the full-quality page are both made from the source with it.
  */
 @Serializable
@@ -48,6 +49,8 @@ data class PageRecipe(
   /** -0.5 to 1 */
   val contrast: Float = 0f,
   val erase: List<EraseStroke> = emptyList(),
+  /** ✨ Beautify (bad paper): null = never used on this page */
+  val beautify: BeautifyRecipe? = null,
 ) {
   val isPlain: Boolean get() = this == Plain
 

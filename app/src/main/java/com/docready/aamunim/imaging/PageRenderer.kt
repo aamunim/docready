@@ -28,15 +28,24 @@ object PageRenderer {
     return finish(geometry(src, r), r)
   }
 
-  /** Corners, quarter turns and fine rotation (what the crop box is drawn on) */
+  /**
+   * Corners, quarter turns, fine rotation, then Beautify's upside-down turn, text straightening
+   * and border trim (what the crop box is drawn on)
+   */
   fun geometry(src: Bitmap, r: PageRecipe): Bitmap {
     var b = DocTools.straighten(src, r.quad?.toFloatArray(), r.turn)
     if (abs(r.rotate) >= 0.05f) b = rotateFine(b, r.rotate)
+    val bt = r.beautify
+    if (bt != null) {
+      if (bt.flip) b = DocTools.straighten(b, null, 180)
+      if (abs(bt.deskew) >= 0.05f) b = rotateFine(b, bt.deskew)
+      b = cropped(b, bt.trim)
+    }
     return b
   }
 
-  /** After the geometry: the crop box, then shadows / look / light, then erasing */
-  fun finish(geo: Bitmap, r: PageRecipe): Bitmap = erase(look(cropped(geo, r.crop), r), r)
+  /** After the geometry: the crop box, Beautify's clean-up, shadows / look / light, then erasing */
+  fun finish(geo: Bitmap, r: PageRecipe): Bitmap = erase(look(Beautifier.apply(cropped(geo, r.crop), r), r), r)
 
   /** A few degrees of rotation around the middle, the same size, white in the corners */
   fun rotateFine(src: Bitmap, degrees: Float): Bitmap {
