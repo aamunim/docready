@@ -126,6 +126,7 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
     target = 0
     assigned.clear()
     crops.clear()
+    cropPages.clear()
     results = null
   }
 
