@@ -1,5 +1,6 @@
 package com.docready.aamunim.ui.screens
 
+import com.docready.aamunim.data.model.beautyBadge
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.RectF
@@ -65,6 +66,7 @@ import com.docready.aamunim.imaging.DocTools
 import com.docready.aamunim.imaging.PdfTools
 import com.docready.aamunim.imaging.SignatureTools
 import com.docready.aamunim.save.ReadyFile
+import com.docready.aamunim.ui.components.BeautyBadge
 import com.docready.aamunim.ui.components.AppIcons
 import com.docready.aamunim.ui.components.BusyRow
 import com.docready.aamunim.ui.components.CropBox
@@ -197,9 +199,13 @@ class SplitState(
    * The page's edits; [faceSafe] (a face photo): its geometry, light and erasing only — a face is
    * never flattened by "remove shadows" or turned grey / black & white.
    */
+  /** A page's edits, for its tile (the Beautify badge) */
+  fun recipeFor(page: PdfPage): PageRecipe? = recipes[page]
+
   private fun recipeOf(page: PdfPage, faceSafe: Boolean): PageRecipe {
     val r = recipes[page] ?: PageRecipe.Plain
-    return if (faceSafe) r.copy(look = Look.ORIGINAL, removeShadows = false) else r
+    // (Beautify keeps its framing for a face, never its paper clean-up)
+    return if (faceSafe) r.copy(look = Look.ORIGINAL, removeShadows = false, beautify = r.beautify?.pixelsOff()) else r
   }
 
   /**
@@ -659,6 +665,7 @@ private fun SplitPages(split: SplitState, pages: List<PdfPage>, preset: Preset?,
           overflow = TextOverflow.Ellipsis,
           textAlign = TextAlign.Center,
         )
+        split.recipeFor(page)?.beautyBadge()?.let { BeautyBadge(it) }
       }
     }
   }

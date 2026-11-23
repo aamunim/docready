@@ -35,6 +35,16 @@ phone, with no sign-in:
   the full page from the untouched source only when files are made. New document pages start
   with shadows removed and Auto color; the photo editor offers crop / rotate / light / erase,
   the signature editor crop / rotate / erase / contrast.
+- **✨ Beautify** (bad paper), a tab of the page editor and part of each page's recipe: one tap
+  looks at the page (on a ≤ 1000 px copy) and turns on only what it needs — text-line
+  straightening (offered only above 15°), upside-down pages, black-border trim, glare on
+  laminated cards, stains, yellow paper to white (ink colours kept), folds, uneven light,
+  denoise then sharpen, faded ink — with Light / Medium / Strong and a switch and slider per
+  step. Fingers, punch holes and staples at the edges are outlined first and painted over
+  only when turned on. Photos, logos and stamps are left out of the colour steps; face photos
+  never get the clean-up; signatures get only faded ink and denoise. Hold to compare, a
+  before / after loupe, "Beautify all pages"; each page tile shows what ran
+  ("✨ shadow · yellow · fold"). A blurry page says "rescan for better quality".
 - **Save**: to this phone (Downloads / DocReady / *folder*) or Share to any app. Files get
   readable names (`photo_300x300.jpg`) and are never overwritten (`-2`, `-3`…).
 - **Share to / Open with DocReady**: photos and PDFs shared or opened from other apps open

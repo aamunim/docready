@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -65,10 +66,14 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import com.docready.aamunim.data.model.BeautifyRecipe
+import com.docready.aamunim.data.model.BeautyStrength
 import com.docready.aamunim.data.model.CropRect
 import com.docready.aamunim.data.model.EraseStroke
 import com.docready.aamunim.data.model.Look
 import com.docready.aamunim.data.model.PageRecipe
+import com.docready.aamunim.imaging.BeautyResult
+import com.docready.aamunim.imaging.Beautifier
 import com.docready.aamunim.imaging.DocTools
 import com.docready.aamunim.imaging.PageRenderer
 import com.docready.aamunim.ui.components.AppIcons
@@ -92,7 +97,7 @@ import kotlin.math.roundToInt
 /** What the editor offers: a document page (all tools), a photo, or a signature */
 enum class EditorMode { DOCUMENT, PHOTO, SIGNATURE }
 
-enum class EditorTab { CROP, CLEAN, ERASE }
+enum class EditorTab { CROP, CLEAN, BEAUTIFY, ERASE }
 
 /**
  * One page for the editor: its name, its recipe, and how to read its source at a given size
@@ -117,6 +122,35 @@ class PageEditorState(
   var index by mutableIntStateOf(start.coerceIn(0, max(0, pages.size - 1)))
     private set
   var tab by mutableStateOf(EditorTab.CROP)
+    private set
+
+  fun selectTab(t: EditorTab) {
+    if (t == tab) return
+    tab = t
+    // the Beautify tab also shows the page without Beautify's clean-up (compare, loupe)
+    if (t == EditorTab.BEAUTIFY) refresh()
+  }
+
+  // ---- ✨ Beautify
+  /** The page without Beautify's clean-up (same framing), for compare and the loupe */
+  var beforeBeautify by mutableStateOf<ImageBitmap?>(null)
+    private set
+
+  /** What the last analysis of each page found (to switch a step back on), and its notes */
+  private val found = HashMap<Int, BeautyResult>()
+  var notes by mutableStateOf<List<String>>(emptyList())
+    private set
+  var askAngle by mutableStateOf<Float?>(null)
+    private set
+  var beautifying by mutableStateOf<String?>(null)
+    private set
+  private var beautifyJob: Job? = null
+  var showFolds by mutableStateOf(false)
+
+  /** The loupe's middle (parts of the shown page) */
+  var loupe by mutableStateOf(Offset(0.5f, 0.35f))
+
+  val foundHere: BeautyResult? get() = found[index]
 
   /** Crop tab: the free crop box (else the four corners, for documents) */
   var boxMode by mutableStateOf(mode != EditorMode.DOCUMENT)
@@ -169,6 +203,9 @@ class PageEditorState(
     index = i
     lastKey = null
     notice = null
+    notes = found[i]?.notes ?: emptyList()
+    askAngle = found[i]?.askAngle
+    beforeBeautify = null
     flags()
     // a render for the page before must never land on this one
     renderVersion++
@@ -201,6 +238,7 @@ class PageEditorState(
   private fun refresh() {
     val src = sourceBmp ?: return
     val r = recipe
+    val withBefore = tab == EditorTab.BEAUTIFY && r.beautify?.hasPixels == true
     val my = ++renderVersion
     renderJob?.cancel()
     renderJob = scope.launch {
@@ -214,12 +252,19 @@ class PageEditorState(
             return@withContext null
           }
           val shownGeo = g.asImageBitmap()
+          val before = if (withBefore) {
+            PageRenderer.finish(g.copy(Bitmap.Config.ARGB_8888, true), r.copy(beautify = r.beautify?.pixelsOff())).asImageBitmap()
+          } else {
+            null
+          }
+          if (my != renderVersion) return@withContext null
           val finished = PageRenderer.finish(g.copy(Bitmap.Config.ARGB_8888, true), r)
-          shownGeo to finished.asImageBitmap()
+          Triple(shownGeo, finished.asImageBitmap(), before)
         }
         if (made != null && my == renderVersion) {
           geometryImage = made.first
           preview = made.second
+          beforeBeautify = made.third
         }
       } catch (e: CancellationException) {
         throw e
@@ -237,7 +282,8 @@ class PageEditorState(
     var r = new
     if (key == null || key != lastKey) notice = null // (an older note is about an older step)
     // erasing is drawn on the straightened page: new corners or a new angle move everything under it
-    if (old.erase.isNotEmpty() && (r.quad != old.quad || r.rotate != old.rotate)) {
+    val beautyMoved = r.beautify?.sameGeometry(old.beautify) == false || (r.beautify == null && old.beautify?.hasGeometry == true)
+    if (old.erase.isNotEmpty() && (r.quad != old.quad || r.rotate != old.rotate || beautyMoved)) {
       r = r.copy(erase = emptyList())
       notice = "Erasing was removed because the corners or the angle changed (Undo brings it back)."
     }
@@ -362,6 +408,123 @@ class PageEditorState(
     update(recipe.copy(erase = recipe.erase + EraseStroke(pts, radius, brushWhite)))
   }
 
+  /** The page as Beautify will see it: framed by the user's corners / turns, before its own straightening */
+  private fun analysable(src: Bitmap, r: PageRecipe): Bitmap = PageRenderer.geometry(src, r.copy(beautify = null))
+
+  private fun applyFound(r: PageRecipe, res: BeautyResult): PageRecipe =
+    r.copy(beautify = res.recipe, removeShadows = r.removeShadows || res.shadow)
+
+  /** ✨ One tap: this page analysed, only the steps it needs turned on */
+  fun beautify() {
+    val src = sourceBmp ?: return
+    val r = recipe
+    val i = index
+    val strength = r.beautify?.strength ?: BeautyStrength.MEDIUM
+    beautifyJob?.cancel()
+    beautifyJob = scope.launch {
+      beautifying = "Looking at the page…"
+      try {
+        val res = withContext(Dispatchers.Default) {
+          val page = analysable(src.copy(Bitmap.Config.ARGB_8888, true), r)
+          try {
+            Beautifier.analyze(page, strength, mode == EditorMode.SIGNATURE)
+          } finally {
+            page.recycle()
+          }
+        }
+        if (i != index) return@launch
+        found[i] = res
+        notes = res.notes
+        askAngle = res.askAngle
+        update(applyFound(recipe, res))
+        if (res.recipe.labels().isEmpty() && !res.shadow) notice = "This page looks fine: nothing to fix."
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Throwable) {
+        error = if (e is OutOfMemoryError) "Not enough memory to look at this page." else e.message ?: "Beautify could not look at this page."
+      } finally {
+        beautifying = null
+      }
+    }
+  }
+
+  /** ✨ Every page, each by its own analysis (undoable page by page) */
+  fun beautifyAll() {
+    beautifyJob?.cancel()
+    beautifyJob = scope.launch {
+      try {
+        for (j in pages.indices) {
+          beautifying = "Beautifying page ${j + 1} of ${pages.size}…"
+          val r = recipes[j]
+          val strength = r.beautify?.strength ?: BeautyStrength.MEDIUM
+          val res = withContext(Dispatchers.Default) {
+            val page = analysable(pages[j].load(Beautifier.ANALYSIS_SIDE), r)
+            try {
+              Beautifier.analyze(page, strength, mode == EditorMode.SIGNATURE)
+            } finally {
+              page.recycle()
+            }
+          }
+          found[j] = res
+          val next = applyFound(recipes[j], res)
+          if (next != recipes[j]) {
+            undo.getOrPut(j) { ArrayList() }.add(recipes[j])
+            redo[j]?.clear()
+            recipes[j] = next
+          }
+        }
+        notes = found[index]?.notes ?: emptyList()
+        askAngle = found[index]?.askAngle
+        flags()
+        refresh()
+        notice = "Every page was looked at; each got only the steps it needs."
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Throwable) {
+        error = if (e is OutOfMemoryError) "Not enough memory for Beautify all." else e.message ?: "Beautify all stopped."
+      } finally {
+        beautifying = null
+      }
+    }
+  }
+
+  fun stopBeautify() {
+    beautifyJob?.cancel()
+    beautifying = null
+  }
+
+  /** A preset strength: every step that is on moves to its level */
+  fun setStrength(s: BeautyStrength) {
+    val b = recipe.beautify ?: BeautifyRecipe()
+    fun lv(v: Float, k: Float = 1f) = if (v > 0f) s.level * k else 0f
+    update(
+      recipe.copy(
+        beautify = b.copy(
+          strength = s,
+          glare = lv(b.glare),
+          stains = lv(b.stains),
+          whiten = lv(b.whiten),
+          folds = lv(b.folds),
+          clarity = lv(b.clarity, 0.8f),
+          ink = lv(b.ink),
+        ),
+      ),
+    )
+  }
+
+  /** One step changed (its switch or its slider) */
+  fun setBeauty(change: (BeautifyRecipe) -> BeautifyRecipe) {
+    val b = recipe.beautify ?: BeautifyRecipe()
+    update(recipe.copy(beautify = change(b)))
+  }
+
+  /** The large tilt Beautify only offered, applied because the user asked */
+  fun acceptAskAngle() {
+    val a = askAngle ?: return
+    askAngle = null
+    setBeauty { it.copy(deskew = a) }
+  }
+
   fun done() = onDone(recipes.toList())
 
   fun close() = onClose()
@@ -401,6 +564,7 @@ fun PageEditorScreen(state: PageEditorState) {
               EditorTab.CROP -> CropControls(state)
               EditorTab.CLEAN -> CleanControls(state)
               EditorTab.ERASE -> EraseControls(state)
+              EditorTab.BEAUTIFY -> BeautifyControls(state)
             }
           }
         }
@@ -466,15 +630,18 @@ private fun EditorCanvas(state: PageEditorState) {
         )
       }
     }
-    EditorTab.CLEAN, EditorTab.ERASE -> {
+    EditorTab.CLEAN, EditorTab.ERASE, EditorTab.BEAUTIFY -> {
       val shown = state.preview ?: return
+      val beauty = state.tab == EditorTab.BEAUTIFY
       ZoomableImage(
         image = shown,
-        before = state.source,
+        before = if (beauty) state.beforeBeautify ?: state.source else state.source,
         erase = state.tab == EditorTab.ERASE,
         brushSize = state.brushSize,
         brushWhite = state.brushWhite,
         onStroke = { state.addStroke(it) },
+        onTap = if (beauty) ({ p -> state.loupe = p }) else null,
+        overlay = if (beauty) beautyOverlay(state) else null,
       )
     }
   }
@@ -489,7 +656,10 @@ private fun ZoomableImage(
   brushSize: Float,
   brushWhite: Boolean,
   onStroke: (List<Float>) -> Unit,
+  onTap: ((Offset) -> Unit)? = null,
+  overlay: (DrawScope.(Rect) -> Unit)? = null,
 ) {
+  val tapped by rememberUpdatedState(onTap)
   var zoom by remember { mutableFloatStateOf(1f) }
   var pan by remember { mutableStateOf(Offset.Zero) }
   var box by remember { mutableStateOf(IntSize.Zero) }
@@ -530,10 +700,13 @@ private fun ZoomableImage(
         .clipToBounds()
         .onSizeChanged { box = it }
         .pointerInput(Unit) {
-          detectTapGestures(onDoubleTap = {
-            zoom = 1f
-            pan = Offset.Zero
-          })
+          detectTapGestures(
+            onDoubleTap = {
+              zoom = 1f
+              pan = Offset.Zero
+            },
+            onTap = { p -> tapped?.invoke(toPage(p)) },
+          )
         }
         .pointerInput(Unit) {
           awaitEachGesture {
@@ -581,6 +754,17 @@ private fun ZoomableImage(
           translationY = pan.y
         },
       )
+      if (overlay != null && !showBefore) {
+        // drawn with the page: same zoom and pan
+        Canvas(
+          Modifier.fillMaxSize().graphicsLayer {
+            scaleX = zoom
+            scaleY = zoom
+            translationX = pan.x
+            translationY = pan.y
+          },
+        ) { overlay(fitted()) }
+      }
       if (live.isNotEmpty()) {
         Canvas(Modifier.fillMaxSize()) {
           val width = brushSize * fitted().width * zoom * 2f
@@ -727,16 +911,17 @@ private fun EraseControls(state: PageEditorState) {
 @Composable
 private fun EditorTabs(state: PageEditorState) {
   val names = when (state.mode) {
-    EditorMode.DOCUMENT -> listOf(EditorTab.CROP to "Crop", EditorTab.CLEAN to "Clean", EditorTab.ERASE to "Erase")
+    EditorMode.DOCUMENT -> listOf(EditorTab.CROP to "Crop", EditorTab.CLEAN to "Clean", EditorTab.BEAUTIFY to "✨ Beautify", EditorTab.ERASE to "Erase")
+    // (never on photos: a face is not paper)
     EditorMode.PHOTO -> listOf(EditorTab.CROP to "Crop", EditorTab.CLEAN to "Light", EditorTab.ERASE to "Erase")
-    EditorMode.SIGNATURE -> listOf(EditorTab.CROP to "Crop", EditorTab.CLEAN to "Contrast", EditorTab.ERASE to "Erase")
+    EditorMode.SIGNATURE -> listOf(EditorTab.CROP to "Crop", EditorTab.CLEAN to "Contrast", EditorTab.BEAUTIFY to "✨ Ink", EditorTab.ERASE to "Erase")
   }
   Row(
     Modifier.fillMaxWidth().background(EditorColors.Background).padding(horizontal = 8.dp, vertical = 6.dp),
     horizontalArrangement = Arrangement.SpaceEvenly,
   ) {
     for ((t, name) in names) {
-      FilterChip(selected = state.tab == t, onClick = { state.tab = t }, label = { Text(name) })
+      FilterChip(selected = state.tab == t, onClick = { state.selectTab(t) }, label = { Text(name) })
     }
   }
 }

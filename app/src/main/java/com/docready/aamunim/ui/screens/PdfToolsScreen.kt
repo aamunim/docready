@@ -1,5 +1,6 @@
 package com.docready.aamunim.ui.screens
 
+import com.docready.aamunim.data.model.beautyBadge
 import android.app.Activity
 import android.app.Application
 import android.content.ActivityNotFoundException
@@ -74,6 +75,7 @@ import com.docready.aamunim.intake.Intake
 import com.docready.aamunim.intake.IntakeTarget
 import com.docready.aamunim.intake.IncomingFile
 import com.docready.aamunim.save.ReadyFile
+import com.docready.aamunim.ui.components.BeautyBadge
 import com.docready.aamunim.ui.components.AppIcons
 import com.docready.aamunim.ui.components.BottomActions
 import com.docready.aamunim.ui.components.BusyRow
@@ -724,6 +726,7 @@ private fun PagesTool(vm: PdfToolsViewModel, addFiles: () -> Unit) {
           Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
             Text("Page ${i + 1}", style = MaterialTheme.typography.bodyLarge)
             Text(p.from, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            vm.recipes[p]?.beautyBadge()?.let { BeautyBadge(it) }
           }
           // (pages being added rely on the list's positions: no change meanwhile)
           IconButton(onClick = { vm.move(i, -1) }, enabled = vm.busy == null && i > 0) { Icon(AppIcons.Up, contentDescription = "Move up") }

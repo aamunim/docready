@@ -1,5 +1,6 @@
 package com.docready.aamunim.ui.screens
 
+import com.docready.aamunim.data.model.beautyBadge
 import android.app.Activity
 import android.app.Application
 import android.content.ActivityNotFoundException
@@ -69,6 +70,7 @@ import com.docready.aamunim.imaging.DocTools
 import com.docready.aamunim.imaging.PdfTools
 import com.docready.aamunim.imaging.Scanner
 import com.docready.aamunim.save.ReadyFile
+import com.docready.aamunim.ui.components.BeautyBadge
 import com.docready.aamunim.ui.components.AppIcons
 import com.docready.aamunim.ui.components.BottomActions
 import com.docready.aamunim.ui.components.BusyRow
@@ -459,6 +461,7 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
               }
               Text("${i + 1}", style = MaterialTheme.typography.labelSmall)
               p.warning?.let { PageNote(it) }
+              p.recipe.beautyBadge()?.let { BeautyBadge(it) }
               if (p.checkCorners) PageNote("Check the corners")
               OutlinedButton(onClick = { vm.remove(p) }, enabled = vm.busy == null, modifier = Modifier.height(32.dp)) {
                 Text("Remove", style = MaterialTheme.typography.labelSmall)
