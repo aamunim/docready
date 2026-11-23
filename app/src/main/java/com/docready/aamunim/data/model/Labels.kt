@@ -23,7 +23,12 @@ val PresetItem.title: String
 fun PresetItem.fileBase(): String {
   val own = name?.trim()?.takeIf { it.isNotEmpty() }
   if (own != null) {
-    return own.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').take(50).ifEmpty { kind.name.lowercase() }
+    // only marks a file name can't hold become "_": letters of any script (e.g. Bangla) stay
+    return own.lowercase()
+      .replace(Regex("[\\\\/:*?\"<>|\\x00-\\x1F\\s]+"), "_")
+      .trim('_', '.')
+      .take(50)
+      .ifEmpty { kind.name.lowercase() }
   }
   return when (kind) {
     ItemKind.PHOTO -> "photo_${widthPx ?: 300}x${heightPx ?: 300}"

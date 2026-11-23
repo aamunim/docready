@@ -94,7 +94,16 @@ enum class PdfMode(val title: String) {
  * One page in the list: a PDF's page or a picture, kept as a JPEG work file.
  * [sourceBytes]: its share of the added file's weight (for "was ... → now ...").
  */
-class PdfPage(val file: File, val thumb: ImageBitmap?, val from: String, val sourceBytes: Long = 0L)
+class PdfPage(
+  val file: File,
+  val thumb: ImageBitmap?,
+  val from: String,
+  val sourceBytes: Long = 0L,
+  /** The file it came from (a PDF, or the photo itself), to render a part again in more detail */
+  val source: File? = null,
+  /** Its page number in [source] when that is a PDF; -1 = a photo */
+  val pdfPage: Int = -1,
+)
 
 class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
   private val ctx: Application get() = getApplication()
@@ -164,12 +173,12 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
               }
               singlePdf = if (filesAdded == 1 && r.total == r.pages.size) f else null
               val share = f.length() / maxOf(1, r.total)
-              r.pages.forEach { p -> out.add(PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), name, share)) }
+              r.pages.forEachIndexed { n, p -> out.add(PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), name, share, f, n)) }
             } else {
               singlePdf = null
               val b = DocTools.load(ctx, Uri.fromFile(f), PdfTools.PAGE_LONG_SIDE)
               val p = DocTools.keepPage(ctx, b)
-              out.add(PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), name, f.length()))
+              out.add(PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), name, f.length(), f, -1))
             }
           }
           out
@@ -199,12 +208,14 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
     pages.add(to, p)
     pagesChanged = true
     result = null
+    split.onPagesChanged(pages)
   }
 
   fun remove(index: Int) {
     if (index in pages.indices) pages.removeAt(index)
     pagesChanged = true
     result = null
+    split.onPagesChanged(pages)
   }
 
   fun clear() {
@@ -219,6 +230,7 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
     back = null
     result = null
     error = null
+    split.onPagesChanged(pages)
   }
 
   /** The scanner's two pictures: front, then back */
@@ -468,7 +480,7 @@ fun PdfToolsScreen(onBack: () -> Unit) {
         FilesResultCard(result)
         Text(result.files[0].name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
       } else if (vm.mode == PdfMode.SPLIT) {
-        SplitTool(vm.split, vm.pages, addFiles, { savingSplit = true })
+        SplitTool(vm.split, vm.pages, addFiles, { savingSplit = true }, outerBusy = vm.busy != null)
       } else if (vm.mode == PdfMode.ID_CARD) {
         IdCardTool(vm, startCardScan, { pickFront.launch("image/*") }, { pickBack.launch("image/*") })
       } else {

@@ -111,6 +111,9 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
 
   /** The part of its first page a photo / signature item is cut from (parts of the page) */
   val crops = mutableStateMapOf<Int, NormBox>()
+
+  /** The page each cut was drawn on: a cut is used only while that page is still the item's first */
+  private val cropPages = mutableMapOf<Int, PdfPage>()
   val fixes = mutableStateMapOf<PdfPage, PageFix>()
   val fixedThumbs = mutableStateMapOf<PdfPage, ImageBitmap>()
   var busy by mutableStateOf<String?>(null)
@@ -138,19 +141,44 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
   fun assignSelected() {
     val p = preset ?: return
     if (target !in p.items.indices) return
-    for (page in selected) assigned[page] = target
+    for (page in selected) {
+      // the page's old item may have lost the page its cut was drawn on
+      assigned[page]?.let { if (it != target) dropCrop(it) }
+      assigned[page] = target
+    }
     selected.clear()
-    crops.remove(target) // the item's first page may have changed
+    dropCrop(target) // the item's first page may have changed
     results = null
   }
 
   fun unassignSelected() {
-    for (page in selected) assigned.remove(page)?.let { crops.remove(it) }
+    for (page in selected) assigned.remove(page)?.let { dropCrop(it) }
     selected.clear()
     results = null
   }
 
   fun pagesOf(item: Int, pages: List<PdfPage>): List<PdfPage> = pages.filter { assigned[it] == item }
+
+  private fun dropCrop(item: Int) {
+    crops.remove(item)
+    cropPages.remove(item)
+  }
+
+  /**
+   * The page list changed (moved, removed, cleared): removed pages are forgotten, a cut whose
+   * page is no longer its item's first page is dropped, and old results are out of date.
+   */
+  fun onPagesChanged(pages: List<PdfPage>) {
+    val present = pages.toSet()
+    assigned.keys.filter { it !in present }.forEach { assigned.remove(it) }
+    selected.removeAll { it !in present }
+    fixes.keys.filter { it !in present }.forEach { fixes.remove(it) }
+    fixedThumbs.keys.filter { it !in present }.forEach { fixedThumbs.remove(it) }
+    for (i in crops.keys.toList()) {
+      if (cropPages[i] == null || pagesOf(i, pages).firstOrNull() !== cropPages[i]) dropCrop(i)
+    }
+    results = null
+  }
 
   /** A page as it will be used: straightened / turned as fixed, its longer side at most [maxSide] */
   private fun prepared(page: PdfPage, maxSide: Int): Bitmap {
@@ -158,6 +186,28 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
     val q = fix?.quad?.takeIf { DocTools.isConvex(it) }
     val b = DocTools.load(ctx, Uri.fromFile(page.file), if (q != null) 2600 else maxSide)
     return DocTools.scaleToMax(DocTools.straighten(b, q, fix?.turn ?: 0), maxSide)
+  }
+
+  /**
+   * The page in more detail, for cutting a small photo / signature out of it: a PDF page rendered
+   * again from its PDF, a photo loaded again from itself (long side up to [CUT_SIDE]). The corners
+   * and turn are parts of the page, so they apply the same way. Falls back to the kept page.
+   */
+  private fun preparedForCut(page: PdfPage): Bitmap {
+    val src = page.source
+    val big: Bitmap? = try {
+      when {
+        src == null -> null
+        page.pdfPage >= 0 -> PdfTools.renderPage(src, page.pdfPage, CUT_SIDE)
+        else -> DocTools.load(ctx, Uri.fromFile(src), CUT_SIDE)
+      }
+    } catch (_: Throwable) {
+      null // (memory or a file gone: the kept page is used)
+    }
+    if (big == null) return prepared(page, 2400)
+    val fix = fixes[page]
+    val q = fix?.quad?.takeIf { DocTools.isConvex(it) }
+    return DocTools.straighten(big, q, fix?.turn ?: 0)
   }
 
   // ---- the region of a photo / signature item, cut by hand
@@ -187,6 +237,7 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
         cropW = b.width
         cropH = b.height
         cropImage = b.asImageBitmap()
+        cropPage = page
         cropping = item
         val r = cropRatio()
         cropBox = crops[item] ?: if (r != null) NormBox.centered(r, 0.4f) else NormBox(0.1f, 0.6f, 0.9f, 0.85f)
@@ -196,9 +247,12 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
     }
   }
 
+  private var cropPage: PdfPage? = null
+
   fun applyCrop() {
     val i = cropping ?: return
     crops[i] = cropBox
+    cropPage?.let { cropPages[i] = it }
     cropping = null
     cropImage = null
     results = null
@@ -303,7 +357,8 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
       return
     }
     val plan = p.items.indices.map { i -> pagesOf(i, pages) }
-    val cuts = crops.toMap()
+    // a cut counts only on the page it was drawn on
+    val cuts = crops.filterKeys { i -> cropPages[i] != null && plan.getOrNull(i)?.firstOrNull() === cropPages[i] }
     scope.launch {
       busy = "Making the files…"
       error = null
@@ -365,7 +420,7 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
         val h = item.heightPx ?: 300
         val notes = mutableListOf<String>()
         more?.let { notes.add(it) }
-        val piece = cutOut(prepared(its[0], 2400), cut)
+        val piece = if (cut != null) cutOut(preparedForCut(its[0]), cut) else prepared(its[0], 2400)
         val bg = (item.background ?: PhotoBackground.WHITE).argb
         // cut by hand: that part is the photo; else the face is found on the page
         val faces = if (cut == null) DocPhoto.findFaces(piece, notes) ?: emptyList() else emptyList()
@@ -395,7 +450,7 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
         val w = item.widthPx ?: 300
         val h = item.heightPx ?: 80
         val png = item.format == OutputFormat.PNG
-        val piece = cutOut(prepared(its[0], 2400), cut)
+        val piece = if (cut != null) cutOut(preparedForCut(its[0]), cut) else prepared(its[0], 2400)
         val ink = SignatureTools.inkOf(piece)
           ?: throw IllegalStateException("No signature found: cut the region closely around it.")
         val placed = SignatureTools.place(ink, w, h, png)
@@ -429,12 +484,19 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
   }
 
   fun allFiles(): List<ReadyFile> = results?.flatMap { it.files } ?: emptyList()
+
+  companion object {
+    /** The long side a page is rendered at when a photo / signature is cut from it */
+    const val CUT_SIDE = 3500
+  }
 }
 
 /** The split tool's screen part (inside PDF tools) */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun SplitTool(split: SplitState, pages: List<PdfPage>, addFiles: () -> Unit, saveAll: () -> Unit) {
+fun SplitTool(split: SplitState, pages: List<PdfPage>, addFiles: () -> Unit, saveAll: () -> Unit, outerBusy: Boolean = false) {
+  // nothing is started while pages are still being opened or made
+  val idle = split.busy == null && !outerBusy
   val presets by LocalContext.current.docReady.presets.presets.collectAsState()
   val cropping = split.cropping
   val cropImage = split.cropImage
@@ -451,7 +513,7 @@ fun SplitTool(split: SplitState, pages: List<PdfPage>, addFiles: () -> Unit, sav
     CropBox(cropImage, split.cropBox, { split.cropBox = it }, fixedRatio = split.cropRatio(), maxHeight = 460)
     VSpace(8)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-      Button(onClick = { split.applyCrop() }) { Text("Use this part") }
+      Button(onClick = { split.applyCrop() }, enabled = idle) { Text("Use this part") }
       OutlinedButton(onClick = { split.cancelCrop() }) { Text("Cancel") }
     }
     return
@@ -478,7 +540,7 @@ fun SplitTool(split: SplitState, pages: List<PdfPage>, addFiles: () -> Unit, sav
     }
     VSpace(8)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-      Button(onClick = { split.applyFix() }, enabled = split.busy == null) { Text("Done") }
+      Button(onClick = { split.applyFix() }, enabled = idle) { Text("Done") }
       OutlinedButton(onClick = { split.cancelFix() }) { Text("Cancel") }
     }
     if (split.busy != null) BusyRow(split.busy ?: "")
@@ -494,7 +556,7 @@ fun SplitTool(split: SplitState, pages: List<PdfPage>, addFiles: () -> Unit, sav
     modifier = Modifier.padding(top = 12.dp),
   )
   VSpace(10)
-  OutlinedButton(onClick = addFiles, enabled = split.busy == null) {
+  OutlinedButton(onClick = addFiles, enabled = idle) {
     Icon(AppIcons.Add, contentDescription = null, modifier = Modifier.size(18.dp))
     Spacer(Modifier.width(6.dp))
     Text(if (pages.isEmpty()) "Add PDF or photos" else "Add more")
@@ -524,11 +586,11 @@ fun SplitTool(split: SplitState, pages: List<PdfPage>, addFiles: () -> Unit, sav
   }
   VSpace(8)
   Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-    Button(onClick = { split.assignSelected() }, enabled = split.selected.isNotEmpty()) {
+    Button(onClick = { split.assignSelected() }, enabled = idle && split.selected.isNotEmpty()) {
       Text("Give ${split.selected.size} to ${preset.items.getOrNull(split.target)?.title ?: ""}")
     }
-    OutlinedButton(onClick = { split.unassignSelected() }, enabled = split.selected.isNotEmpty()) { Text("Not used") }
-    if (split.selected.size == 1) OutlinedButton(onClick = { split.startFix(split.selected[0]) }) { Text("Fix corners") }
+    OutlinedButton(onClick = { split.unassignSelected() }, enabled = idle && split.selected.isNotEmpty()) { Text("Not used") }
+    if (split.selected.size == 1) OutlinedButton(onClick = { split.startFix(split.selected[0]) }, enabled = idle) { Text("Fix corners") }
     TextButton(onClick = { if (split.selected.isEmpty()) split.selectAll(pages) else split.selected.clear() }) {
       Text(if (split.selected.isEmpty()) "Select all" else "Clear")
     }
@@ -581,14 +643,14 @@ fun SplitTool(split: SplitState, pages: List<PdfPage>, addFiles: () -> Unit, sav
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
         }
-        OutlinedButton(onClick = { split.startCrop(i, pages) }) { Text(if (split.crops[i] == null) "Cut" else "Change") }
+        OutlinedButton(onClick = { split.startCrop(i, pages) }, enabled = idle) { Text(if (split.crops[i] == null) "Cut" else "Change") }
         if (split.crops[i] != null) TextButton(onClick = { split.clearCrop(i) }) { Text("Whole") }
       }
     }
   }
 
   VSpace(14)
-  Button(onClick = { split.makeAll(pages) }, enabled = split.busy == null, modifier = Modifier.fillMaxWidth()) { Text("Make all") }
+  Button(onClick = { split.makeAll(pages) }, enabled = idle, modifier = Modifier.fillMaxWidth()) { Text("Make all") }
   if (split.busy != null) BusyRow(split.busy ?: "")
   ErrorText(split.error)
 
@@ -600,7 +662,7 @@ fun SplitTool(split: SplitState, pages: List<PdfPage>, addFiles: () -> Unit, sav
     }
     if (results.any { it.files.isNotEmpty() }) {
       VSpace(12)
-      Button(onClick = saveAll, enabled = split.busy == null, modifier = Modifier.fillMaxWidth()) { Text("Save or share all") }
+      Button(onClick = saveAll, enabled = idle, modifier = Modifier.fillMaxWidth()) { Text("Save or share all") }
     }
   }
 }

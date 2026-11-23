@@ -62,6 +62,44 @@ object PdfTools {
   }
 
   /**
+   * One page of [pdf] as a picture, its longer side [maxSide] px (for cutting a small part of
+   * it in detail); a phone short of memory gets it at 2400, then at A4 150 dpi.
+   */
+  fun renderPage(pdf: File, index: Int, maxSide: Int): Bitmap {
+    val fd = ParcelFileDescriptor.open(pdf, ParcelFileDescriptor.MODE_READ_ONLY)
+    try {
+      val renderer = PdfRenderer(fd)
+      try {
+        val page = renderer.openPage(index)
+        try {
+          for (side in listOf(maxSide, 2400, PAGE_LONG_SIDE).distinct().filter { it <= maxSide }) {
+            try {
+              val k = side.toFloat() / maxOf(page.width, page.height)
+              val bmp = Bitmap.createBitmap(
+                maxOf(1, (page.width * k).roundToInt()),
+                maxOf(1, (page.height * k).roundToInt()),
+                Bitmap.Config.ARGB_8888,
+              )
+              bmp.eraseColor(Color.WHITE)
+              page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+              return bmp
+            } catch (_: OutOfMemoryError) {
+              // smaller next
+            }
+          }
+          throw IllegalStateException("The page is too big for this phone's memory.")
+        } finally {
+          page.close()
+        }
+      } finally {
+        renderer.close()
+      }
+    } finally {
+      fd.close()
+    }
+  }
+
+  /**
    * Both sides of an ID card (NID) on one A4 page (150 dpi, portrait): the front above,
    * the back below. [actualSize]: each side printed at a real card's size (85.6 x 54 mm);
    * else each side fills most of its half of the page.
