@@ -208,12 +208,15 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
                   }
                 }
               }
-              if (total == 0) problems.add("$name has no pages.")
-              if (total > PdfTools.PAGE_LIMIT) {
-                notes.add("$name has $total pages: only the first ${PdfTools.PAGE_LIMIT} are used.")
+              if (total == 0) {
+                problems.add("$name has no pages.")
+              } else {
+                if (total > PdfTools.PAGE_LIMIT) {
+                  notes.add("$name has $total pages: only the first ${PdfTools.PAGE_LIMIT} are used.")
+                }
+                filesAdded++
+                singlePdf = if (filesAdded == 1 && total <= PdfTools.PAGE_LIMIT) f else null
               }
-              filesAdded++
-              singlePdf = if (filesAdded == 1 && total <= PdfTools.PAGE_LIMIT) f else null
             } else {
               val shown = withContext(Dispatchers.Default) { listThumb(DocTools.load(ctx, Uri.fromFile(f), 400)) }
               pages.add(PdfPage(shown, name, f.length(), f, -1))
@@ -615,9 +618,10 @@ private fun PagesTool(vm: PdfToolsViewModel, addFiles: () -> Unit) {
             Text("Page ${i + 1}", style = MaterialTheme.typography.bodyLarge)
             Text(p.from, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
           }
-          IconButton(onClick = { vm.move(i, -1) }, enabled = i > 0) { Icon(AppIcons.Up, contentDescription = "Move up") }
-          IconButton(onClick = { vm.move(i, 1) }, enabled = i < vm.pages.size - 1) { Icon(AppIcons.Down, contentDescription = "Move down") }
-          IconButton(onClick = { vm.remove(i) }) { Icon(AppIcons.Delete, contentDescription = "Remove page") }
+          // (pages being added rely on the list's positions: no change meanwhile)
+          IconButton(onClick = { vm.move(i, -1) }, enabled = vm.busy == null && i > 0) { Icon(AppIcons.Up, contentDescription = "Move up") }
+          IconButton(onClick = { vm.move(i, 1) }, enabled = vm.busy == null && i < vm.pages.size - 1) { Icon(AppIcons.Down, contentDescription = "Move down") }
+          IconButton(onClick = { vm.remove(i) }, enabled = vm.busy == null) { Icon(AppIcons.Delete, contentDescription = "Remove page") }
         }
       }
     }

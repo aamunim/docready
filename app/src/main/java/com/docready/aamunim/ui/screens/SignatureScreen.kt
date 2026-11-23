@@ -351,7 +351,8 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
         formSource = file
         formIsPdf = pdf
         formCount = minOf(count, PdfTools.PAGE_LIMIT)
-        showFormPage(0)
+        // (in this coroutine: busy stays on until the first page is shown)
+        loadFormPage(0)
       } catch (e: Throwable) {
         error = messageOf(e, "The page could not be opened.")
       } finally {
@@ -360,43 +361,57 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
     }
   }
 
+  /** The latest page asked for: an older render that finishes later is thrown away */
+  private var formRequest = 0
+
   fun showFormPage(index: Int) {
+    viewModelScope.launch { loadFormPage(index) }
+  }
+
+  private suspend fun loadFormPage(index: Int) {
     val src = formSource ?: return
     if (index !in 0 until formCount) return
     val pdf = formIsPdf
-    viewModelScope.launch {
-      busy = "Opening page ${index + 1}…"
-      try {
-        val (file, b) = withContext(Dispatchers.Default) {
-          // a PDF page is made only when it is shown
-          val f = if (pdf) {
-            val page = PdfTools.renderPage(src, index, 2000)
-            try {
-              DocTools.save(ctx, DocTools.jpeg(page, 92), "jpg")
-            } finally {
-              page.recycle()
-            }
-          } else {
-            src
+    val my = ++formRequest
+    busy = "Opening page ${index + 1}…"
+    try {
+      val (file, b) = withContext(Dispatchers.Default) {
+        // a PDF page is made only when it is shown
+        val f = if (pdf) {
+          val page = PdfTools.renderPage(src, index, 2000)
+          try {
+            DocTools.save(ctx, DocTools.jpeg(page, 92), "jpg")
+          } finally {
+            page.recycle()
           }
-          f to DocTools.load(ctx, Uri.fromFile(f), 1400)
+        } else {
+          src
         }
-        formPageFile = file
-        formW = b.width
-        formH = b.height
-        formIndex = index
-        formImage = b.asImageBitmap()
-        placeBoxState = startBox()
-        placeResult = null
-      } catch (e: Throwable) {
-        error = messageOf(e, "The page could not be opened.")
-      } finally {
-        busy = null
+        f to DocTools.load(ctx, Uri.fromFile(f), 1400)
       }
+      if (my != formRequest || formSource !== src) {
+        if (file !== src) file.delete() // a newer page was asked for meanwhile
+        return
+      }
+      // the page shown before is no longer needed (one page file at a time)
+      formPageFile?.let { old -> if (old != src && old != file) old.delete() }
+      formPageFile = file
+      formW = b.width
+      formH = b.height
+      formIndex = index
+      formImage = b.asImageBitmap()
+      placeBoxState = startBox()
+      placeResult = null
+    } catch (e: Throwable) {
+      if (my == formRequest) error = messageOf(e, "The page could not be opened.")
+    } finally {
+      if (my == formRequest) busy = null
     }
   }
 
   fun closeForm() {
+    formRequest++
+    formPageFile?.let { if (formIsPdf) it.delete() }
     formSource = null
     formPageFile = null
     formCount = 0
