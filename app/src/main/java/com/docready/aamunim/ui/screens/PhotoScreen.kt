@@ -13,7 +13,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -123,9 +125,29 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
   private val item = preset?.items?.getOrNull(itemIndex)?.takeIf { it.kind == ItemKind.PHOTO }
     ?: preset?.items?.firstOrNull { it.kind == ItemKind.PHOTO }
 
-  var widthText by mutableStateOf((item?.widthPx ?: 300).toString())
-  var heightText by mutableStateOf((item?.heightPx ?: 300).toString())
-  var maxKbText by mutableStateOf(if (item != null) item.maxKb?.toString() ?: "" else "100")
+  private var widthState by mutableStateOf((item?.widthPx ?: 300).toString())
+  private var heightState by mutableStateOf((item?.heightPx ?: 300).toString())
+  private var maxKbState by mutableStateOf(if (item != null) item.maxKb?.toString() ?: "" else "100")
+
+  // a typed size / KB changes what Save would give: the shown result is out of date until "Apply"
+  var widthText: String
+    get() = widthState
+    set(v) {
+      widthState = v
+      edited()
+    }
+  var heightText: String
+    get() = heightState
+    set(v) {
+      heightState = v
+      edited()
+    }
+  var maxKbText: String
+    get() = maxKbState
+    set(v) {
+      maxKbState = v
+      edited()
+    }
   var background by mutableStateOf(item?.background ?: PhotoBackground.WHITE)
   var headSize by mutableFloatStateOf(70f)
   var enhance by mutableStateOf(true)
@@ -134,12 +156,27 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
   var result by mutableStateOf<ImageResult?>(null)
   var error by mutableStateOf<String?>(null)
 
+  /** The result no longer matches the settings (Save waits for the photo to be made again) */
+  var stale by mutableStateOf(false)
+    private set
+  private var edits = 0
+
+  private fun edited() {
+    edits++
+    stale = true
+  }
+
   private val lock = Mutex()
   private var src: Bitmap? = null
+
+  /** The photo with light and contrast evened, made once (levels before the background goes in) */
+  private var levelled: Bitmap? = null
   private var faces: List<DocPhoto.FaceInfo> = emptyList()
-  private var sourceNotes: List<String> = emptyList()
+  private var facesFound = false
+  private var qualityNotes: List<String> = emptyList()
+  private var faceNotes: List<String> = emptyList()
   private var mask: FloatArray? = null
-  private var maskTried = false
+  private var maskFound = false
   private var version = 0
 
   fun setSource(uri: Uri) = load { FileNames.copyIn(ctx, uri, "img") }
@@ -160,11 +197,15 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
             val (sharpness, brightness) = DocTools.quality(ctx, Uri.fromFile(f))
             if (sharpness < 60) notes.add("The photo looks blurry. A sharper photo gives a better result.")
             if (brightness < 60) notes.add("The photo is dark. Take it in good, even light.")
-            faces = DocPhoto.findFaces(b, notes)
-            sourceNotes = notes
+            qualityNotes = notes
             src = b
+            levelled = null
+            faces = emptyList()
+            facesFound = false
+            faceNotes = emptyList()
             mask = null
-            maskTried = false
+            maskFound = false
+            findFacesIfNeeded(b)
           }
         }
         hasSource = true
@@ -174,6 +215,18 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
         error = messageOf(e, "The photo could not be opened.")
         busy = null
       }
+    }
+  }
+
+  /** Faces: found once; when the finder could not run (still downloading), tried again next time */
+  private fun findFacesIfNeeded(s: Bitmap) {
+    if (facesFound) return
+    val notes = mutableListOf<String>()
+    val found = DocPhoto.findFaces(s, notes)
+    faceNotes = notes
+    if (found != null) {
+      faces = found
+      facesFound = true
     }
   }
 
@@ -195,28 +248,37 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
     val pct = headSize
     val enh = enhance
     val my = ++version
+    val editsNow = edits
+    stale = true
     viewModelScope.launch {
-      busy = if (bg.argb != null && !maskTried) "Changing the background…" else "Making the photo…"
+      busy = if (bg.argb != null && !maskFound) "Changing the background…" else "Making the photo…"
       error = null
       try {
         val r = lock.withLock {
           withContext(Dispatchers.Default) {
             val s = src ?: return@withContext null
-            if (bg.argb != null && !maskTried) {
-              mask = try {
-                DocPhoto.personMask(s)
+            findFacesIfNeeded(s)
+            if (bg.argb != null && !maskFound) {
+              // a failure (the model still downloading) is tried again on the next change
+              try {
+                mask = DocPhoto.personMask(s)
+                maskFound = true
               } catch (_: Exception) {
-                null
+                mask = null
               }
-              maskTried = true
             }
-            val notes = sourceNotes.toMutableList()
+            val notes = (qualityNotes + faceNotes).toMutableList()
             if (bg.argb != null && mask == null) {
-              notes.add("The background could not be changed now (Google's model may still be downloading): kept as it is.")
+              notes.add(
+                if (maskFound) "No person found to separate from the background: kept as it is."
+                else "The background could not be changed now (Google's model may still be downloading): kept as it is. Try again in a minute.",
+              )
             }
-            val made = DocPhoto.make(s, w, h, 2000, pct, bg.argb, faces.firstOrNull(), mask, notes)
-            val cleaned = DocTools.clean(made.bitmap, "color", enh)
-            val fit = DocTools.fitPicture(cleaned, kb?.let { it * 1024L }, true)
+            // light and contrast are evened on the photo itself, before the new background goes
+            // in (evening it after would stretch a light blue / grey background to white)
+            val base = if (enh) levelled ?: DocTools.autoLevels(s.copy(Bitmap.Config.ARGB_8888, true)).also { levelled = it } else s
+            val made = DocPhoto.make(base, w, h, 2000, pct, bg.argb, faces.firstOrNull(), mask, notes)
+            val fit = DocTools.fitPicture(made.bitmap, kb?.let { it * 1024L }, true)
             val name = "photo_${w}x$h.jpg"
             val file = FileNames.outputFile(ctx, name)
             file.writeBytes(fit.bytes)
@@ -227,7 +289,10 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
             )
           }
         }
-        if (my == version && r != null) result = r
+        if (my == version && r != null) {
+          result = r
+          stale = edits != editsNow
+        }
       } catch (e: Throwable) {
         if (my == version) error = messageOf(e, "The photo could not be made.")
       } finally {
@@ -235,13 +300,18 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
       }
     }
   }
+}
 
-  fun reset() {
-    src = null
-    hasSource = false
-    result = null
-    error = null
-  }
+/** Shown while the result on screen no longer matches what was changed */
+@Composable
+fun StaleNote(text: String) {
+  Text(
+    text,
+    style = MaterialTheme.typography.bodyMedium,
+    fontWeight = FontWeight.SemiBold,
+    color = MaterialTheme.colorScheme.primary,
+    modifier = Modifier.padding(top = 8.dp),
+  )
 }
 
 fun messageOf(e: Throwable, fallback: String): String =
@@ -268,7 +338,7 @@ fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
           OutlinedButton(onClick = source.takePhoto, modifier = Modifier.height(52.dp)) { Text("Retake") }
           Button(
             onClick = { saving = true },
-            enabled = vm.result != null && vm.busy == null,
+            enabled = vm.result != null && !vm.stale && vm.busy == null,
             modifier = Modifier.weight(1f).height(52.dp),
           ) { Text("Save or share") }
         }
@@ -278,6 +348,8 @@ fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
     Column(
       Modifier
         .padding(padding)
+        .consumeWindowInsets(padding)
+        .imePadding()
         .fillMaxSize()
         .verticalScroll(rememberScrollState())
         .padding(horizontal = 16.dp, vertical = 12.dp),
@@ -328,6 +400,7 @@ private fun PhotoEditor(vm: PhotoViewModel) {
         VSpace(12)
         ImageResultCard(r, fromPreset = vm.preset != null)
         NotesList(r.notes)
+        if (vm.stale && vm.busy == null) StaleNote("The size changed: tap “Apply size” to make the photo again.")
       }
       ErrorText(vm.error)
 

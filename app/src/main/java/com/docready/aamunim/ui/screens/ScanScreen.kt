@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -159,14 +161,13 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
             val cleaned = files.map { f ->
               DocTools.keepPage(ctx, DocTools.clean(DocTools.load(ctx, Uri.fromFile(f), PdfTools.PAGE_LONG_SIDE), color, enh, true))
             }
-            val (bytes, _, fits) = DocTools.fitPdf(cleaned, maxBytes)
             val name = if (files.size == 1) "scan_1_page.pdf" else "scan_${files.size}_pages.pdf"
             val out = FileNames.outputFile(ctx, name)
-            out.writeBytes(bytes)
+            val (size, _, fits) = DocTools.fitPdf(cleaned, maxBytes, out)
             FilesResult(
               listOf(ReadyFile(out, name, "application/pdf")),
               DocTools.thumbnail(cleaned[0], 600)?.asImageBitmap(),
-              bytes.size.toLong(), bytes.size.toLong(), kb, fits, files.size, OutputFormat.PDF,
+              size, size, kb, fits, files.size, OutputFormat.PDF,
             )
           } else {
             val ready = mutableListOf<ReadyFile>()
@@ -274,6 +275,8 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
     Column(
       Modifier
         .padding(padding)
+        .consumeWindowInsets(padding)
+        .imePadding()
         .fillMaxSize()
         .verticalScroll(rememberScrollState())
         .padding(horizontal = 16.dp, vertical = 12.dp),

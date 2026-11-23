@@ -92,14 +92,15 @@ object DocPhoto {
 
   /**
    * The faces on a photo with what to tell the user about them (found once per photo,
-   * then reused while the background or the size changes). A failure is a note, not an error.
+   * then reused while the background or the size changes). A failure is a note, not an error;
+   * null = the face finder could not run (e.g. Play services still downloading it): try again later.
    */
-  fun findFaces(src: Bitmap, notes: MutableList<String>): List<FaceInfo> {
+  fun findFaces(src: Bitmap, notes: MutableList<String>): List<FaceInfo>? {
     val list = try {
       faces(src)
     } catch (e: Exception) {
       notes.add("The face finder could not run (${e.message ?: "Google Play services"}): the photo is fitted as it is.")
-      return emptyList()
+      return null
     }
     if (list.isEmpty()) {
       notes.add("No face found: the photo is fitted as it is. Check it.")

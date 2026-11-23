@@ -65,7 +65,10 @@ private val toolArgs = listOf(
 @Composable
 fun DocReadyApp() {
   val nav = rememberNavController()
-  val back: () -> Unit = { nav.popBackStack() }
+  // (a second quick tap on Back must never pop Home and leave a blank screen)
+  val back: () -> Unit = {
+    if (nav.previousBackStackEntry != null) nav.popBackStack()
+  }
 
   NavHost(navController = nav, startDestination = Routes.HOME) {
     composable(Routes.HOME) {

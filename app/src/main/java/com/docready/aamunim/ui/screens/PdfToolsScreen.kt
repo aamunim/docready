@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -86,8 +88,11 @@ enum class PdfMode(val title: String) {
   ID_CARD("NID on one A4"),
 }
 
-/** One page in the list: a PDF's page or a picture, kept as a JPEG work file */
-class PdfPage(val file: File, val thumb: ImageBitmap?, val from: String)
+/**
+ * One page in the list: a PDF's page or a picture, kept as a JPEG work file.
+ * [sourceBytes]: its share of the added file's weight (for "was ... → now ...").
+ */
+class PdfPage(val file: File, val thumb: ImageBitmap?, val from: String, val sourceBytes: Long = 0L)
 
 class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
   private val ctx: Application get() = getApplication()
@@ -100,9 +105,12 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
   var error by mutableStateOf<String?>(null)
   val notes = mutableStateListOf<String>()
 
-  /** The added files' own weight (shown as "was ... → now ...") */
-  private var addedBytes = 0L
   private var firstName: String? = null
+
+  /** The one PDF added, while its pages are as they came (compress may then keep it as it is) */
+  private var singlePdf: File? = null
+  private var filesAdded = 0
+  private var pagesChanged = false
 
   // NID: both sides of the card
   var front by mutableStateOf<PdfPage?>(null)
@@ -135,18 +143,21 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
           for ((fileOf, info) in items) {
             val (mime, name) = info
             val f = fileOf()
-            addedBytes += f.length()
             if (firstName == null) firstName = name.substringBeforeLast('.')
+            filesAdded++
             if (mime == "application/pdf") {
               val r = PdfTools.render(ctx, f)
               if (r.total > r.pages.size) {
                 withContext(Dispatchers.Main) { notes.add("$name: only the first ${r.pages.size} of ${r.total} pages were added.") }
               }
-              r.pages.forEach { p -> out.add(PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), name)) }
+              singlePdf = if (filesAdded == 1 && r.total == r.pages.size) f else null
+              val share = f.length() / maxOf(1, r.total)
+              r.pages.forEach { p -> out.add(PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), name, share)) }
             } else {
+              singlePdf = null
               val b = DocTools.load(ctx, Uri.fromFile(f), PdfTools.PAGE_LONG_SIDE)
               val p = DocTools.keepPage(ctx, b)
-              out.add(PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), name))
+              out.add(PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), name, f.length()))
             }
           }
           out
@@ -171,19 +182,23 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
     if (index !in pages.indices || to !in pages.indices) return
     val p = pages.removeAt(index)
     pages.add(to, p)
+    pagesChanged = true
     result = null
   }
 
   fun remove(index: Int) {
     if (index in pages.indices) pages.removeAt(index)
+    pagesChanged = true
     result = null
   }
 
   fun clear() {
     pages.clear()
     notes.clear()
-    addedBytes = 0L
     firstName = null
+    singlePdf = null
+    filesAdded = 0
+    pagesChanged = false
     front = null
     back = null
     result = null
@@ -250,7 +265,9 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
     }
     if (m != PdfMode.ID_CARD && files.isEmpty()) return
     val actual = actualSize
-    val before = addedBytes.takeIf { m == PdfMode.COMPRESS && it > 0 }
+    val before = pages.sumOf { it.sourceBytes }.takeIf { m == PdfMode.COMPRESS && it > 0 }
+    // the PDF exactly as it was added (no page moved or removed): never made heavier
+    val original = singlePdf?.takeIf { m == PdfMode.COMPRESS && !pagesChanged }
     val base = FileNames.safeBase(firstName ?: "document")
     viewModelScope.launch {
       busy = "Making the PDF…"
@@ -272,13 +289,34 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
             sourcePages = files
             name = if (m == PdfMode.COMPRESS) "${base}_compressed.pdf" else "merged_${files.size}_pages.pdf"
           }
-          val (bytes, _, fits) = DocTools.fitPdf(sourcePages, maxBytes)
           val out = FileNames.outputFile(ctx, name)
-          out.writeBytes(bytes)
+          var notesOut: String? = null
+          val size: Long
+          val fits: Boolean
+          if (original != null && maxBytes != null && original.length() <= maxBytes) {
+            // already small enough: kept as it is (text stays text)
+            original.copyTo(out, overwrite = true)
+            size = out.length()
+            fits = true
+            notesOut = "This PDF is already under ${kb} KB: it is kept as it was."
+          } else {
+            val (written, _, ok) = DocTools.fitPdf(sourcePages, maxBytes, out)
+            if (original != null && written >= original.length()) {
+              // pictures would only make it heavier: the original is kept
+              original.copyTo(out, overwrite = true)
+              size = out.length()
+              fits = maxBytes == null || size <= maxBytes
+              notesOut = "Saving the pages again would not make this PDF smaller: it is kept as it was."
+            } else {
+              size = written
+              fits = ok
+            }
+          }
+          notesOut?.let { n -> withContext(Dispatchers.Main) { notes.add(n) } }
           FilesResult(
             listOf(ReadyFile(out, name, "application/pdf")),
             DocTools.thumbnail(sourcePages[0], 600)?.asImageBitmap(),
-            bytes.size.toLong(), bytes.size.toLong(), kb, fits, sourcePages.size, OutputFormat.PDF, before,
+            size, size, kb, fits, sourcePages.size, OutputFormat.PDF, before,
           )
         }
       } catch (e: Throwable) {
@@ -355,6 +393,8 @@ fun PdfToolsScreen(onBack: () -> Unit) {
     Column(
       Modifier
         .padding(padding)
+        .consumeWindowInsets(padding)
+        .imePadding()
         .fillMaxSize()
         .verticalScroll(rememberScrollState())
         .padding(horizontal = 16.dp, vertical = 12.dp),

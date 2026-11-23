@@ -5,7 +5,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -32,7 +34,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -228,20 +232,39 @@ private class EditItem(item: PresetItem) {
   var maxKb by mutableStateOf(item.maxKb?.toString() ?: "")
   var format by mutableStateOf(item.format)
   var background by mutableStateOf(item.background ?: PhotoBackground.WHITE)
+
+  /** As text, to be kept in the saved screen state */
+  fun toSaved(): ArrayList<String> = arrayListOf(kind.name, width, height, maxKb, format.name, background.name)
+
+  companion object {
+    fun fromSaved(v: List<String>): EditItem = EditItem(PresetItem(ItemKind.valueOf(v[0]))).apply {
+      width = v[1]
+      height = v[2]
+      maxKb = v[3]
+      format = OutputFormat.valueOf(v[4])
+      background = PhotoBackground.valueOf(v[5])
+    }
+  }
 }
+
+private val EditItemsSaver = listSaver<SnapshotStateList<EditItem>, ArrayList<String>>(
+  save = { list -> list.map { it.toSaved() } },
+  restore = { saved -> mutableStateListOf<EditItem>().apply { saved.forEach { add(EditItem.fromSaved(it)) } } },
+)
 
 /** New preset (id "new") or one of the user's own */
 @Composable
 fun PresetEditScreen(id: String, onDone: () -> Unit) {
   val repo = LocalContext.current.docReady.presets
   val existing = remember(id) { repo.get(id)?.takeIf { !it.builtIn } }
-  var name by remember(id) { mutableStateOf(existing?.name ?: "") }
-  val items = remember(id) {
+  // (kept when the screen turns or the app is closed in the background)
+  var name by rememberSaveable(id) { mutableStateOf(existing?.name ?: "") }
+  val items = rememberSaveable(id, saver = EditItemsSaver) {
     mutableStateListOf<EditItem>().apply {
       (existing?.items ?: listOf(PresetItem(ItemKind.PHOTO, 300, 300, 100, OutputFormat.JPG, PhotoBackground.WHITE))).forEach { add(EditItem(it)) }
     }
   }
-  var error by remember { mutableStateOf<String?>(null) }
+  var error by rememberSaveable { mutableStateOf<String?>(null) }
 
   fun save() {
     if (name.isBlank()) {
@@ -292,7 +315,7 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
     },
   ) { padding ->
     Column(
-      Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+      Modifier.padding(padding).consumeWindowInsets(padding).imePadding().fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
     ) {
       OutlinedTextField(
         value = name,

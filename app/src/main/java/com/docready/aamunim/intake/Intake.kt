@@ -71,7 +71,13 @@ object Intake {
     }
     val out = mutableListOf<IncomingFile>()
     var skipped = 0
+    val ownAuthority = context.packageName + ".fileprovider"
     for ((i, u) in uris.take(60).withIndex()) {
+      // only other apps' content links: never file:// paths, never our own private files
+      if (u.scheme != "content" || u.authority == null || u.authority == ownAuthority) {
+        skipped++
+        continue
+      }
       try {
         val name = FileNames.displayName(context, u) ?: "file-${i + 1}"
         val ext = name.substringAfterLast('.', "").lowercase()

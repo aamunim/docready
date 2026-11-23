@@ -13,7 +13,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -84,11 +86,53 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
   private val item = preset?.items?.getOrNull(itemIndex)?.takeIf { it.kind == ItemKind.SIGNATURE }
     ?: preset?.items?.firstOrNull { it.kind == ItemKind.SIGNATURE }
 
-  var widthText by mutableStateOf((item?.widthPx ?: 300).toString())
-  var heightText by mutableStateOf((item?.heightPx ?: 80).toString())
-  var maxKbText by mutableStateOf(if (item != null) item.maxKb?.toString() ?: "" else "60")
-  var transparent by mutableStateOf(item?.format == OutputFormat.PNG)
-  var box by mutableStateOf(NormBox.Default)
+  private var widthState by mutableStateOf((item?.widthPx ?: 300).toString())
+  private var heightState by mutableStateOf((item?.heightPx ?: 80).toString())
+  private var maxKbState by mutableStateOf(if (item != null) item.maxKb?.toString() ?: "" else "60")
+  private var transparentState by mutableStateOf(item?.format == OutputFormat.PNG)
+  private var boxState by mutableStateOf(NormBox.Default)
+
+  // any change makes the shown result out of date: Save waits until it is made again
+  var widthText: String
+    get() = widthState
+    set(v) {
+      widthState = v
+      edited()
+    }
+  var heightText: String
+    get() = heightState
+    set(v) {
+      heightState = v
+      edited()
+    }
+  var maxKbText: String
+    get() = maxKbState
+    set(v) {
+      maxKbState = v
+      edited()
+    }
+  var transparent: Boolean
+    get() = transparentState
+    set(v) {
+      transparentState = v
+      edited()
+    }
+  var box: NormBox
+    get() = boxState
+    set(v) {
+      boxState = v
+      edited()
+    }
+
+  /** The result no longer matches the settings */
+  var stale by mutableStateOf(false)
+    private set
+  private var edits = 0
+
+  private fun edited() {
+    edits++
+    stale = true
+  }
   var picture by mutableStateOf<ImageBitmap?>(null)
   var busy by mutableStateOf<String?>(null)
   var result by mutableStateOf<ImageResult?>(null)
@@ -168,6 +212,7 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
     }
     val cut = box
     val png = transparent
+    val editsNow = edits
     viewModelScope.launch {
       busy = "Cleaning the signature…"
       error = null
@@ -206,6 +251,7 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
           }
         }
         result = r
+        stale = edits != editsNow
       } catch (e: Throwable) {
         error = messageOf(e, "The signature could not be made.")
       } finally {
@@ -236,7 +282,7 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
           }
           Button(
             onClick = { saving = true },
-            enabled = vm.result != null && vm.busy == null,
+            enabled = vm.result != null && !vm.stale && vm.busy == null,
             modifier = Modifier.weight(1f).height(52.dp),
           ) { Text("Save or share") }
         }
@@ -246,6 +292,8 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
     Column(
       Modifier
         .padding(padding)
+        .consumeWindowInsets(padding)
+        .imePadding()
         .fillMaxSize()
         .verticalScroll(rememberScrollState())
         .padding(horizontal = 16.dp, vertical = 12.dp),
@@ -308,6 +356,7 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
           }
           VSpace(10)
           ImageResultCard(r, fromPreset = vm.preset != null)
+          if (vm.stale && vm.busy == null) StaleNote("Something changed: tap “Make again” to update the signature.")
         }
       }
       if (vm.busy != null) BusyRow(vm.busy ?: "")

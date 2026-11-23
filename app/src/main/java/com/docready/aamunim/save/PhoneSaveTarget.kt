@@ -33,11 +33,13 @@ class PhoneSaveTarget(private val folders: FolderRepository) : SaveTarget {
   override suspend fun save(context: Context, files: List<ReadyFile>, folder: String): SaveOutcome =
     withContext(Dispatchers.IO) {
       val name = FileNames.safeFolder(folder)
+      // the files saved so far: recorded even when a later one fails
+      val saved = mutableListOf<SavedFile>()
       try {
-        val saved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-          saveToDownloads(context, files, name)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+          saveToDownloads(context, files, name, saved)
         } else {
-          saveToAppFolder(context, files, name)
+          saveToAppFolder(context, files, name, saved)
         }
         folders.addFiles(name, saved)
         SaveOutcome.Saved(
@@ -46,16 +48,17 @@ class PhoneSaveTarget(private val folders: FolderRepository) : SaveTarget {
           note = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) null else "On Android 9 and older, files stay in DocReady's own folder.",
         )
       } catch (e: Exception) {
-        SaveOutcome.Failed(e.message ?: "The file could not be saved.")
+        if (saved.isNotEmpty()) folders.addFiles(name, saved)
+        val done = if (saved.isEmpty()) "" else " (${saved.size} of ${files.size} saved)"
+        SaveOutcome.Failed((e.message ?: "The file could not be saved.") + done)
       }
     }
 
-  private fun saveToDownloads(context: Context, files: List<ReadyFile>, folder: String): List<SavedFile> {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return emptyList()
+  private fun saveToDownloads(context: Context, files: List<ReadyFile>, folder: String, out: MutableList<SavedFile>) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
     val resolver = context.contentResolver
     val relative = Environment.DIRECTORY_DOWNLOADS + "/DocReady/" + folder + "/"
     val taken = (existingNames(context, relative) + folders.namesIn(folder)).toMutableSet()
-    val out = mutableListOf<SavedFile>()
     for (f in files) {
       val name = uniqueName(f.name, taken)
       taken.add(name)
@@ -78,7 +81,6 @@ class PhoneSaveTarget(private val folders: FolderRepository) : SaveTarget {
       }
       out.add(SavedFile(name, uri.toString(), f.mime, f.file.length(), System.currentTimeMillis()))
     }
-    return out
   }
 
   /** The names DocReady already put in that folder (an app sees its own files there) */
@@ -101,11 +103,10 @@ class PhoneSaveTarget(private val folders: FolderRepository) : SaveTarget {
     return names
   }
 
-  private fun saveToAppFolder(context: Context, files: List<ReadyFile>, folder: String): List<SavedFile> {
+  private fun saveToAppFolder(context: Context, files: List<ReadyFile>, folder: String, out: MutableList<SavedFile>) {
     val base = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: File(context.filesDir, "Downloads")
     val dir = File(base, "DocReady/$folder").apply { mkdirs() }
     val taken = ((dir.list()?.toSet() ?: emptySet()) + folders.namesIn(folder)).toMutableSet()
-    val out = mutableListOf<SavedFile>()
     for (f in files) {
       val name = uniqueName(f.name, taken)
       taken.add(name)
@@ -114,7 +115,6 @@ class PhoneSaveTarget(private val folders: FolderRepository) : SaveTarget {
       val uri: Uri = FileProvider.getUriForFile(context, context.packageName + ".fileprovider", target)
       out.add(SavedFile(name, uri.toString(), f.mime, target.length(), System.currentTimeMillis()))
     }
-    return out
   }
 
   private fun uniqueName(name: String, taken: Set<String>): String {

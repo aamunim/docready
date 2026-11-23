@@ -13,6 +13,7 @@ import android.net.Uri
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.OutputStream
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -632,31 +633,51 @@ object DocTools {
 
   data class Page(val jpeg: ByteArray, val width: Int, val height: Int)
 
+
+  /** Counts what is written, so the PDF's object offsets are known while it streams to a file */
+  private class CountingStream(private val out: OutputStream) : OutputStream() {
+    var count = 0L
+      private set
+
+    override fun write(b: Int) {
+      out.write(b)
+      count++
+    }
+
+    override fun write(b: ByteArray, off: Int, len: Int) {
+      out.write(b, off, len)
+      count += len
+    }
+
+    override fun flush() = out.flush()
+  }
+
   /**
-   * A PDF whose pages are the JPEGs themselves (/DCTDecode): its weight is
-   * the pictures' weight plus about half a KB a page. Each page is A4
-   * (landscape for a wide picture), the picture filling it.
+   * A PDF whose pages are the JPEGs themselves (/DCTDecode): its weight is the pictures'
+   * weight plus about half a KB a page. Each page is A4 (landscape for a wide picture), the
+   * picture filling it. Pages are asked for one at a time ([pageAt]) and written straight to
+   * [sink], so only one page's JPEG is in memory. Returns the bytes written.
    */
-  fun pdf(pages: List<Page>): ByteArray {
-    val out = ByteArrayOutputStream()
-    val offsets = ArrayList<Int>()
+  fun writePdf(sink: OutputStream, pageCount: Int, pageAt: (Int) -> Page): Long {
+    val out = CountingStream(sink)
+    val offsets = LongArray(2 + 3 * pageCount)
     fun w(s: String) = out.write(s.toByteArray(Charsets.ISO_8859_1))
     fun obj(n: Int, body: () -> Unit) {
-      while (offsets.size < n) offsets.add(0)
-      offsets[n - 1] = out.size()
+      offsets[n - 1] = out.count
       w("$n 0 obj\n")
       body()
       w("\nendobj\n")
     }
-    w("%PDF-1.4\n%âãÏÓ\n")
-    val n = pages.size
+    w("%PDF-1.4\n%\u00e2\u00e3\u00cf\u00d3\n")
+    val n = pageCount
     // 1 catalog, 2 pages, then for page i: page 3+3i, content 4+3i, image 5+3i
     obj(1) { w("<< /Type /Catalog /Pages 2 0 R >>") }
     obj(2) {
       val kids = (0 until n).joinToString(" ") { "${3 + 3 * it} 0 R" }
       w("<< /Type /Pages /Kids [$kids] /Count $n >>")
     }
-    pages.forEachIndexed { i, p ->
+    for (i in 0 until n) {
+      val p = pageAt(i)
       val landscape = p.width > p.height
       val pw = if (landscape) A4_H_PT else A4_W_PT
       val ph = if (landscape) A4_W_PT else A4_H_PT
@@ -686,41 +707,50 @@ object DocTools {
         w("\nendstream")
       }
     }
-    val xref = out.size()
+    val xref = out.count
     val total = 2 + 3 * n
     w("xref\n0 ${total + 1}\n0000000000 65535 f \n")
     for (i in 0 until total) w(String.format(java.util.Locale.US, "%010d 00000 n \n", offsets[i]))
     w("trailer\n<< /Size ${total + 1} /Root 1 0 R >>\nstartxref\n$xref\n%%EOF\n")
-    return out.toByteArray()
+    out.flush()
+    return out.count
+  }
+
+  /** A page file as a JPEG page at [quality], made [k] times smaller (one page in memory) */
+  private fun encodePage(f: File, quality: Int, k: Float): Page {
+    var b = BitmapFactory.decodeFile(f.path) ?: throw IllegalStateException("A page could not be read.")
+    if (k < 0.999f) b = scale(b, (b.width * k).roundToInt(), (b.height * k).roundToInt())
+    val p = Page(jpeg(b, quality), b.width, b.height)
+    b.recycle()
+    return p
+  }
+
+  private fun longSideOf(f: File): Int {
+    val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(f.path, o)
+    return max(o.outWidth, o.outHeight)
   }
 
   /**
-   * Pages (already cleaned, kept as files) → a PDF under [maxBytes].
-   * Only one page is in memory at a time. One quality for all pages; if
-   * the lowest readable quality is still too heavy, every page a little
-   * smaller, down to about 100 dpi.
+   * Pages (already cleaned, kept as files) → a PDF under [maxBytes], written to [dest].
+   * Only one page is in memory at a time: while trying, only each page's size is added up.
+   * One quality for all pages; if the lowest readable quality is still too heavy, every page a
+   * little smaller, down to about 100 dpi. Returns (bytes written, quality, fits).
    */
-  fun fitPdf(pages: List<File>, maxBytes: Long?): Triple<ByteArray, Int, Boolean> {
+  fun fitPdf(pages: List<File>, maxBytes: Long?, dest: File): Triple<Long, Int, Boolean> {
     var k = 1.0f
     val overhead = 600L * pages.size + 400
+    val longest = pages.maxOf { longSideOf(it) }
     while (true) {
-      fun encodeAll(q: Int): List<Page> =
-        pages.map { f ->
-          var b = BitmapFactory.decodeFile(f.path) ?: throw IllegalStateException("A page could not be read.")
-          if (k < 0.999f) b = scale(b, (b.width * k).roundToInt(), (b.height * k).roundToInt())
-          val p = Page(jpeg(b, q), b.width, b.height)
-          b.recycle()
-          p
-        }
-      // only the total weight per quality is kept while trying (not every page's bytes)
+      val factor = k
       val totals = HashMap<Int, Long>()
       val budget = maxBytes?.let { it - overhead }
-      val (q, ok) = bestQuality(budget) { qq -> totals.getOrPut(qq) { encodeAll(qq).sumOf { it.jpeg.size.toLong() } } }
-      val chosen = encodeAll(q)
-      val longest = chosen.maxOf { max(it.width, it.height) }
-      if (ok || longest <= 1170) {
-        val doc = pdf(chosen)
-        return Triple(doc, q, ok && (maxBytes == null || doc.size <= maxBytes))
+      val (q, ok) = bestQuality(budget) { qq ->
+        totals.getOrPut(qq) { pages.sumOf { f -> encodePage(f, qq, factor).jpeg.size.toLong() } }
+      }
+      if (ok || longest * factor <= 1170f) {
+        val size = FileOutputStream(dest).buffered().use { s -> writePdf(s, pages.size) { i -> encodePage(pages[i], q, factor) } }
+        return Triple(size, q, ok && (maxBytes == null || size <= maxBytes))
       }
       k *= 0.85f
     }
