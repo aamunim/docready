@@ -79,7 +79,9 @@ import com.docready.aamunim.ui.components.fullQuad
 import com.docready.aamunim.ui.components.isFullQuad
 import com.docready.aamunim.ui.theme.EditorColors
 import com.docready.aamunim.ui.theme.EditorTheme
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -132,6 +134,9 @@ class PageEditorState(
   var working by mutableStateOf(false)
     private set
   var error by mutableStateOf<String?>(null)
+
+  /** A quiet note (e.g. erasing removed because the corners changed) */
+  var notice by mutableStateOf<String?>(null)
   var canUndo by mutableStateOf(false)
     private set
   var canRedo by mutableStateOf(false)
@@ -139,7 +144,14 @@ class PageEditorState(
 
   private var sourceBmp: Bitmap? = null
   private var loadVersion = 0
+
+  /** Read on the background thread too: a newer request makes an older render stop early */
+  @Volatile
   private var renderVersion = 0
+  private var renderJob: Job? = null
+
+  /** Corners / crop box being dragged: the preview is made again when the finger lifts */
+  private var dragDirty = false
   private val undo = HashMap<Int, ArrayList<PageRecipe>>()
   private val redo = HashMap<Int, ArrayList<PageRecipe>>()
 
@@ -156,7 +168,11 @@ class PageEditorState(
     if (i !in pages.indices) return
     index = i
     lastKey = null
+    notice = null
     flags()
+    // a render for the page before must never land on this one
+    renderVersion++
+    renderJob?.cancel()
     val my = ++loadVersion
     source = null
     geometryImage = null
@@ -178,24 +194,35 @@ class PageEditorState(
     }
   }
 
-  /** The preview made again from the source and the current recipe */
+  /**
+   * The preview made again from the source and the current recipe. Only the newest request
+   * counts: an older one is cancelled, and stops between steps if it is already running.
+   */
   private fun refresh() {
     val src = sourceBmp ?: return
     val r = recipe
     val my = ++renderVersion
-    scope.launch {
+    renderJob?.cancel()
+    renderJob = scope.launch {
       working = true
       try {
-        val (geo, done) = withContext(Dispatchers.Default) {
+        val made = withContext(Dispatchers.Default) {
+          if (my != renderVersion) return@withContext null
           val g = PageRenderer.geometry(src.copy(Bitmap.Config.ARGB_8888, true), r)
+          if (my != renderVersion) {
+            g.recycle()
+            return@withContext null
+          }
           val shownGeo = g.asImageBitmap()
           val finished = PageRenderer.finish(g.copy(Bitmap.Config.ARGB_8888, true), r)
           shownGeo to finished.asImageBitmap()
         }
-        if (my == renderVersion) {
-          geometryImage = geo
-          preview = done
+        if (made != null && my == renderVersion) {
+          geometryImage = made.first
+          preview = made.second
         }
+      } catch (e: CancellationException) {
+        throw e
       } catch (e: Throwable) {
         if (my == renderVersion) error = if (e is OutOfMemoryError) "Not enough memory for this preview." else e.message ?: "The preview could not be made."
       } finally {
@@ -205,16 +232,37 @@ class PageEditorState(
   }
 
   /** A change to this page (pushed on its undo list; drags with the same [key] are one step) */
-  fun update(r: PageRecipe, key: String? = null) {
-    if (r == recipe) return
+  fun update(new: PageRecipe, key: String? = null) {
+    val old = recipe
+    var r = new
+    // erasing is drawn on the straightened page: new corners or a new angle move everything under it
+    if (old.erase.isNotEmpty() && (r.quad != old.quad || r.rotate != old.rotate)) {
+      r = r.copy(erase = emptyList())
+      notice = "Erasing was removed because the corners or the angle changed (Undo brings it back)."
+    }
+    if (r == old) return
     if (key == null || key != lastKey) {
-      undo.getOrPut(index) { ArrayList() }.add(recipe)
+      undo.getOrPut(index) { ArrayList() }.add(old)
       redo[index]?.clear()
     }
     lastKey = key
     recipes[index] = r
     flags()
-    refresh()
+    if (key != null) {
+      // a drag: the box / corners follow the finger; the preview is made when it lifts
+      dragDirty = true
+    } else {
+      refresh()
+    }
+  }
+
+  /** The finger lifted: the next drag is a new undo step, and the preview catches up */
+  fun endDrag() {
+    lastKey = null
+    if (dragDirty) {
+      dragDirty = false
+      refresh()
+    }
   }
 
   fun undo() {
@@ -248,7 +296,16 @@ class PageEditorState(
   /** This page's look (shadows, look, light) on every page; their crops and erasing kept */
   fun applyLookToAll() {
     val r = recipe
-    for (j in recipes.indices) if (j != index) recipes[j] = recipes[j].withLookOf(r)
+    for (j in recipes.indices) {
+      if (j == index) continue
+      val next = recipes[j].withLookOf(r)
+      if (next == recipes[j]) continue
+      // undoable on each page (open it and Undo)
+      undo.getOrPut(j) { ArrayList() }.add(recipes[j])
+      redo[j]?.clear()
+      recipes[j] = next
+    }
+    notice = "This look is now on every page (Undo on a page takes it back there)."
   }
 
   fun findEdges() {
@@ -265,7 +322,29 @@ class PageEditorState(
 
   fun wholePage() = update(recipe.copy(quad = null, crop = null))
 
-  fun turn() = update(recipe.copy(turn = (recipe.turn + 90) % 360))
+  /**
+   * A quarter turn clockwise: the crop box and the erasing turn with the page (a point x, y
+   * becomes 1 - y, x; a stroke's width follows the page's new width).
+   */
+  fun turn() {
+    val r = recipe
+    val geo = geometryImage
+    val aspect = geo?.let { it.width.toFloat() / max(1, it.height) }
+    val erase = when {
+      r.erase.isEmpty() -> r.erase
+      aspect == null -> emptyList()
+      else -> r.erase.map { st ->
+        val pts = ArrayList<Float>(st.points.size)
+        for (k in 0 until st.points.size / 2) {
+          pts.add(1f - st.points[k * 2 + 1])
+          pts.add(st.points[k * 2])
+        }
+        EraseStroke(pts, st.radius * aspect, st.white)
+      }
+    }
+    val crop = r.crop?.let { CropRect(1f - it.bottom, it.left, 1f - it.top, it.right) }
+    update(r.copy(turn = (r.turn + 90) % 360, crop = crop, erase = erase))
+  }
 
   /** A brush stroke drawn on the shown page (points as parts of it) */
   fun addStroke(points: List<Float>) {
@@ -304,6 +383,9 @@ fun PageEditorScreen(state: PageEditorState) {
         }
         state.error?.let {
           Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+        }
+        state.notice?.let {
+          Text(it, color = EditorColors.TextDim, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
         }
         Surface(color = EditorColors.Panel) {
           Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
@@ -355,9 +437,12 @@ private fun EditorCanvas(state: PageEditorState) {
     EditorTab.CROP -> {
       if (!state.boxMode && state.mode == EditorMode.DOCUMENT) {
         val src = state.source ?: return
-        QuadBox(src, r.quad?.toFloatArray() ?: fullQuad(), { q ->
-          state.update(r.copy(quad = q.toList().takeIf { !isFullQuad(q) }), "quad")
-        })
+        QuadBox(
+          src,
+          r.quad?.toFloatArray() ?: fullQuad(),
+          { q -> state.update(state.recipe.copy(quad = q.toList().takeIf { !isFullQuad(q) }), "quad") },
+          onDragEnd = { state.endDrag() },
+        )
       } else {
         val geo = state.geometryImage ?: return
         val c = r.crop
@@ -369,6 +454,7 @@ private fun EditorCanvas(state: PageEditorState) {
             state.update(state.recipe.copy(crop = if (full) null else CropRect(b.left, b.top, b.right, b.bottom)), "crop")
           },
           maxHeight = 520,
+          onDragEnd = { state.endDrag() },
         )
       }
     }

@@ -67,13 +67,34 @@ object FileNames {
     null
   }
 
-  /** A picked / shared file copied into the app (the sender's link may not last) */
-  fun copyIn(context: Context, uri: Uri, ext: String): File {
+  /**
+   * A picked / shared file copied into the app (the sender's link may not last). [maxBytes]:
+   * the copy stops (and the file is refused) as soon as it is bigger, so a huge file is never
+   * stored whole.
+   */
+  fun copyIn(context: Context, uri: Uri, ext: String, maxBytes: Long? = null): File {
     val dir = File(context.cacheDir, "inputs").apply { mkdirs() }
     dir.listFiles()?.forEach { if (System.currentTimeMillis() - it.lastModified() > 86_400_000L) it.delete() }
     val f = File(dir, "in_${System.currentTimeMillis()}_${(1000..9999).random()}.$ext")
-    val copied = context.contentResolver.openInputStream(uri)?.use { input -> f.outputStream().use { input.copyTo(it) } }
-    if (copied == null) throw IllegalStateException("The file could not be read.")
+    val input = context.contentResolver.openInputStream(uri) ?: throw IllegalStateException("The file could not be read.")
+    try {
+      input.use { inp ->
+        f.outputStream().use { out ->
+          val buf = ByteArray(16 * 1024)
+          var total = 0L
+          while (true) {
+            val n = inp.read(buf)
+            if (n < 0) break
+            total += n
+            if (maxBytes != null && total > maxBytes) throw IllegalArgumentException("This file is too big.")
+            out.write(buf, 0, n)
+          }
+        }
+      }
+    } catch (e: Exception) {
+      f.delete()
+      throw e
+    }
     return f
   }
 }

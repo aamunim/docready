@@ -90,7 +90,11 @@ private val PRESET_FILE_TYPES = arrayOf("application/json", "application/octet-s
 /** The picked preset file read and saved (off the main thread); a message for anything wrong */
 suspend fun importPreset(context: Context, uri: Uri): Result<Preset> = withContext(Dispatchers.IO) {
   runCatching {
-    val file = FileNames.copyIn(context, uri, "json")
+    val file = try {
+      FileNames.copyIn(context, uri, "json", PresetCodec.MAX_BYTES.toLong())
+    } catch (_: IllegalArgumentException) {
+      throw IllegalArgumentException("This file is too big to be a DocReady preset.")
+    }
     try {
       context.docReady.presets.import(file)
     } finally {

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.core.content.IntentCompat
 import com.docready.aamunim.data.FileNames
+import com.docready.aamunim.data.PresetCodec
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -110,6 +111,8 @@ object Intake {
             "application/json" -> "json"
             else -> "img"
           },
+          // a preset file is tiny: a big "JSON" is refused while it is copied
+          maxBytes = if (mime == "application/json") PresetCodec.MAX_BYTES.toLong() else null,
         )
         out.add(IncomingFile(file, name, mime))
       } catch (_: Exception) {

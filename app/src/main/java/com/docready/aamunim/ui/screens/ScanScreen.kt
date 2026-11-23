@@ -265,10 +265,15 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
             }
             val name = if (files.size == 1) "scan_1_page.pdf" else "scan_${files.size}_pages.pdf"
             val out = FileNames.outputFile(ctx, name)
-            val (size, _, fits) = DocTools.fitPdf(cleaned, maxBytes, out)
+            val previewImg = DocTools.thumbnail(cleaned[0], 600)?.asImageBitmap()
+            val (size, _, fits) = try {
+              DocTools.fitPdf(cleaned, maxBytes, out)
+            } finally {
+              cleaned.forEach { it.delete() } // (in the PDF now)
+            }
             FilesResult(
               listOf(ReadyFile(out, name, "application/pdf")),
-              DocTools.thumbnail(cleaned[0], 600)?.asImageBitmap(),
+              previewImg,
               size, size, kb, fits, files.size, OutputFormat.PDF,
             )
           } else {

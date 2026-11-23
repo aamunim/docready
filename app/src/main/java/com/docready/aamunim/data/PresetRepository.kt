@@ -89,7 +89,7 @@ object PresetCodec {
   const val MIME = "application/json"
   const val EXTENSION = ".docready.json"
   private const val FORMAT = "docready-preset"
-  private const val MAX_BYTES = 64 * 1024
+  const val MAX_BYTES = 64 * 1024
   private const val MAX_ITEMS = 40
 
   private val strict = Json {

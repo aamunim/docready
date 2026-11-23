@@ -94,7 +94,9 @@ fun CropBox(
   fixedRatio: Float? = null,
   overlay: ImageBitmap? = null,
   maxHeight: Int = 380,
+  onDragEnd: () -> Unit = {},
 ) {
+  val ended by rememberUpdatedState(onDragEnd)
   val ratio = image.width.toFloat() / image.height.toFloat()
   val current by rememberUpdatedState(box)
   val change by rememberUpdatedState(onBoxChange)
@@ -152,6 +154,7 @@ fun CropBox(
                   }
                   change(next)
                 }
+                ended()
               }
             }
           },
@@ -194,7 +197,14 @@ fun CropBox(
  * bottom-right, bottom-left): each corner is dragged on its own.
  */
 @Composable
-fun QuadBox(image: ImageBitmap, quad: FloatArray, onQuadChange: (FloatArray) -> Unit, modifier: Modifier = Modifier) {
+fun QuadBox(
+  image: ImageBitmap,
+  quad: FloatArray,
+  onQuadChange: (FloatArray) -> Unit,
+  modifier: Modifier = Modifier,
+  onDragEnd: () -> Unit = {},
+) {
+  val ended by rememberUpdatedState(onDragEnd)
   val ratio = image.width.toFloat() / image.height.toFloat()
   val current by rememberUpdatedState(quad)
   val change by rememberUpdatedState(onQuadChange)
@@ -225,6 +235,7 @@ fun QuadBox(image: ImageBitmap, quad: FloatArray, onQuadChange: (FloatArray) -> 
                   q[near * 2 + 1] = (q[near * 2 + 1] + delta.y / h).coerceIn(0f, 1f)
                   change(q)
                 }
+                ended()
               }
             }
           },

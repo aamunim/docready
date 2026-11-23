@@ -282,8 +282,8 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
                   val shown = thumb.asImageBitmap()
                   withContext(Dispatchers.Main) {
                     val page = PdfPage(shown, name, f.length() / maxOf(1, total), f, n)
-                    // new document pages: shadows removed, colour evened (changeable in the editor)
-                    recipes[page] = PageRecipe.Document
+                    // a PDF's page stays as it was made (it is not a photo of paper)
+                    recipes[page] = PageRecipe.Plain
                     pages.add(page)
                     busy = "Reading page ${n + 1} of ${minOf(total, PdfTools.PAGE_LIMIT)}…"
                   }
@@ -301,6 +301,7 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
             } else {
               val shown = withContext(Dispatchers.Default) { listThumb(DocTools.load(ctx, Uri.fromFile(f), 400)) }
               val page = PdfPage(shown, name, f.length(), f, -1)
+              // a photo of paper: shadows removed, colour evened (changeable in the editor)
               recipes[page] = PageRecipe.Document
               pages.add(page)
               filesAdded++
@@ -468,24 +469,30 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
           var notesOut: String? = null
           val size: Long
           val fits: Boolean
-          if (original != null && maxBytes != null && original.length() <= maxBytes) {
-            // already small enough: kept as it is (text stays text)
-            original.copyTo(out, overwrite = true)
-            size = out.length()
-            fits = true
-            notesOut = "This PDF is already under ${kb} KB: it is kept as it was."
-          } else {
-            val (written, _, ok) = DocTools.fitPdf(sourcePages, maxBytes, out)
-            if (original != null && written >= original.length()) {
-              // pictures would only make it heavier: the original is kept
+          val previewImg = sourcePages.firstOrNull()?.let { DocTools.thumbnail(it, 600)?.asImageBitmap() } ?: chosen.firstOrNull()?.thumb
+          try {
+            if (original != null && maxBytes != null && original.length() <= maxBytes) {
+              // already small enough: kept as it is (text stays text)
               original.copyTo(out, overwrite = true)
               size = out.length()
-              fits = maxBytes == null || size <= maxBytes
-              notesOut = "Saving the pages again would not make this PDF smaller: it is kept as it was."
+              fits = true
+              notesOut = "This PDF is already under ${kb} KB: it is kept as it was."
             } else {
-              size = written
-              fits = ok
+              val (written, _, ok) = DocTools.fitPdf(sourcePages, maxBytes, out)
+              if (original != null && written >= original.length()) {
+                // pictures would only make it heavier: the original is kept
+                original.copyTo(out, overwrite = true)
+                size = out.length()
+                fits = maxBytes == null || size <= maxBytes
+                notesOut = "Saving the pages again would not make this PDF smaller: it is kept as it was."
+              } else {
+                size = written
+                fits = ok
+              }
             }
+          } finally {
+            // the full-quality page pictures are in the PDF now: not kept on the phone
+            sourcePages.forEach { it.delete() }
           }
           withContext(Dispatchers.Main) {
             // only the latest run's "kept as it was" note is shown
@@ -495,7 +502,7 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
           }
           FilesResult(
             listOf(ReadyFile(out, name, "application/pdf")),
-            sourcePages.firstOrNull()?.let { DocTools.thumbnail(it, 600)?.asImageBitmap() } ?: chosen.firstOrNull()?.thumb,
+            previewImg,
             size, size, kb, fits, if (m == PdfMode.ID_CARD) 1 else chosen.size, OutputFormat.PDF, before,
           )
         }

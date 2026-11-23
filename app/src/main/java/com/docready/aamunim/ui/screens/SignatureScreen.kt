@@ -371,6 +371,12 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
         }
         if (count == 0) throw IllegalStateException("This PDF has no pages.")
         if (count > PdfTools.PAGE_LIMIT) error = "This PDF has $count pages: only the first ${PdfTools.PAGE_LIMIT} can be used."
+        // the form before: its page file and edits must not carry over to this one
+        formRequest++
+        formPageFile?.let { old -> if (formIsPdf && old.exists()) old.delete() }
+        formPageFile = null
+        formIndex = 0
+        formRecipe = PageRecipe.Plain
         formSource = file
         formIsPdf = pdf
         formCount = minOf(count, PdfTools.PAGE_LIMIT)
@@ -496,10 +502,15 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
             val kept = DocTools.keepPage(ctx, page)
             val name = "signed_page.pdf"
             val out = FileNames.outputFile(ctx, name)
-            val (size, _, fits) = DocTools.fitPdf(listOf(kept), maxBytes, out)
+            val previewImg = DocTools.thumbnail(kept, 600)?.asImageBitmap()
+            val (size, _, fits) = try {
+              DocTools.fitPdf(listOf(kept), maxBytes, out)
+            } finally {
+              kept.delete() // (in the PDF now)
+            }
             FilesResult(
               listOf(ReadyFile(out, name, "application/pdf")),
-              DocTools.thumbnail(kept, 600)?.asImageBitmap(),
+              previewImg,
               size, size, kb, fits, 1, OutputFormat.PDF,
             )
           } else {

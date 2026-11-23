@@ -51,6 +51,7 @@ import com.docready.aamunim.data.FileNames
 import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.data.model.OutputFormat
 import com.docready.aamunim.data.model.PhotoBackground
+import com.docready.aamunim.data.model.Look
 import com.docready.aamunim.data.model.PageRecipe
 import com.docready.aamunim.data.model.Preset
 import com.docready.aamunim.data.model.PresetItem
@@ -189,17 +190,27 @@ class SplitState(
   }
 
   /** A page as it will be used: made from its source with its edits, its longer side at most [maxSide] */
-  private fun prepared(page: PdfPage, maxSide: Int): Bitmap = page.rendered(ctx, recipes[page] ?: PageRecipe.Plain, maxSide)
+  private fun prepared(page: PdfPage, maxSide: Int, faceSafe: Boolean = false): Bitmap =
+    page.rendered(ctx, recipeOf(page, faceSafe), maxSide)
+
+  /**
+   * The page's edits; [faceSafe] (a face photo): its geometry, light and erasing only — a face is
+   * never flattened by "remove shadows" or turned grey / black & white.
+   */
+  private fun recipeOf(page: PdfPage, faceSafe: Boolean): PageRecipe {
+    val r = recipes[page] ?: PageRecipe.Plain
+    return if (faceSafe) r.copy(look = Look.ORIGINAL, removeShadows = false) else r
+  }
 
   /**
    * The page in more detail, for cutting a small photo / signature out of it: made again from
    * its PDF / photo with its long side up to [CUT_SIDE], its edits applied the same way (they are
    * parts of the page). A phone short of memory gets the usual page.
    */
-  private fun preparedForCut(page: PdfPage): Bitmap = try {
-    page.rendered(ctx, recipes[page] ?: PageRecipe.Plain, CUT_SIDE)
+  private fun preparedForCut(page: PdfPage, faceSafe: Boolean = false): Bitmap = try {
+    page.rendered(ctx, recipeOf(page, faceSafe), CUT_SIDE)
   } catch (_: OutOfMemoryError) {
-    prepared(page, 2400)
+    prepared(page, 2400, faceSafe)
   }
 
   // ---- the region of a photo / signature item, cut by hand
@@ -327,7 +338,11 @@ class SplitState(
         val kept = its.map { DocTools.keepPage(ctx, prepared(it, PdfTools.PAGE_LONG_SIDE)) }
         val name = nameFor(base, "pdf")
         val out = FileNames.outputFile(ctx, name)
-        val (size, _, fits) = DocTools.fitPdf(kept, maxBytes, out)
+        val (size, _, fits) = try {
+          DocTools.fitPdf(kept, maxBytes, out)
+        } finally {
+          kept.forEach { it.delete() } // (in the PDF now)
+        }
         SplitItemResult(item, listOf(ReadyFile(out, name, "application/pdf")), size, fits, false, null)
       }
 
@@ -336,7 +351,11 @@ class SplitState(
         val h = item.heightPx ?: 300
         val notes = mutableListOf<String>()
         more?.let { notes.add(it) }
-        val piece = if (cut != null) DocTools.scaleToMax(cutOut(preparedForCut(its[0]), cut), 2400) else prepared(its[0], 2400)
+        val piece = if (cut != null) {
+          DocTools.scaleToMax(cutOut(preparedForCut(its[0], faceSafe = true), cut), 2400)
+        } else {
+          prepared(its[0], 2400, faceSafe = true)
+        }
         val bg = (item.background ?: PhotoBackground.WHITE).argb
         // cut by hand: that part is the photo; else the face is found on the page
         val faces = if (cut == null) DocPhoto.findFaces(piece, notes) ?: emptyList() else emptyList()
