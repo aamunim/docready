@@ -1,0 +1,41 @@
+package com.docready.aamunim.data.model
+
+val ItemKind.label: String
+  get() = when (this) {
+    ItemKind.PHOTO -> "Photo"
+    ItemKind.SIGNATURE -> "Signature"
+    ItemKind.DOCUMENT -> "Document"
+  }
+
+val PhotoBackground.label: String
+  get() = when (this) {
+    PhotoBackground.WHITE -> "White"
+    PhotoBackground.LIGHT_BLUE -> "Light blue"
+    PhotoBackground.GREY -> "Grey"
+    PhotoBackground.KEEP -> "Keep original"
+  }
+
+/** "Photo · 300×300 px · max 100 KB · JPG" */
+fun PresetItem.summary(): String {
+  val parts = mutableListOf(kind.label)
+  if (widthPx != null && heightPx != null) parts.add("$widthPx×$heightPx px") else if (kind == ItemKind.DOCUMENT) parts.add("A4")
+  parts.add(maxKb?.let { "max ${kbText(it)}" } ?: "no size limit")
+  parts.add(format.name)
+  if (kind == ItemKind.PHOTO && background != null) parts.add(background.label.lowercase() + " background")
+  return parts.joinToString(" · ")
+}
+
+/** 100 → "100 KB", 1024 → "1 MB", 1536 → "1.5 MB" */
+fun kbText(kb: Int): String =
+  if (kb >= 1024 && kb % 512 == 0) {
+    val mb = kb / 1024.0
+    if (mb == mb.toLong().toDouble()) "${mb.toLong()} MB" else "$mb MB"
+  } else {
+    "$kb KB"
+  }
+
+/** A file's weight as people read it: whole KB rounded up (so "100 KB" never hides 100.4) */
+fun bytesText(bytes: Long): String {
+  val kb = (bytes + 1023) / 1024
+  return if (kb >= 1024) String.format(java.util.Locale.US, "%.1f MB", bytes / 1048576.0) else "$kb KB"
+}
