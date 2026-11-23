@@ -293,10 +293,16 @@ class PageEditorState(
     }
     val beautyMoved = r.beautify?.sameGeometry(old.beautify) == false || (r.beautify == null && old.beautify?.hasGeometry == true)
     // (Turn 90 carries erasing along itself: its strokes are already moved)
-    val turnedOnly = r.turn != old.turn && r.quad == old.quad && r.rotate == old.rotate && r.erase != old.erase
+    // (only when Beautify's framing stays as it was: else the strokes would land elsewhere)
+    val turnedOnly = r.turn != old.turn && r.quad == old.quad && r.rotate == old.rotate && r.erase != old.erase && !beautyMoved
     if (old.erase.isNotEmpty() && !turnedOnly && (r.quad != old.quad || r.rotate != old.rotate || beautyMoved)) {
       r = r.copy(erase = emptyList())
       note = (note?.let { "$it " } ?: "") + "Erasing was removed because the page moved under it (Undo brings it back)."
+    }
+    // the crop box is drawn on the framed page: a new Beautify framing would shift it
+    if (beautyMoved && r.crop != null) {
+      r = r.copy(crop = null)
+      note = (note?.let { "$it " } ?: "") + "The crop box was reset because the page's framing changed (Undo brings it back)."
     }
     return r to note
   }
@@ -462,7 +468,8 @@ class PageEditorState(
       } catch (e: Throwable) {
         error = if (e is OutOfMemoryError) "Not enough memory to look at this page." else e.message ?: "Beautify could not look at this page."
       } finally {
-        beautifying = null
+        // (a stopped job must not clear the progress of the one that replaced it)
+        if (beautifyJob === coroutineContext[Job]) beautifying = null
       }
     }
   }
@@ -500,7 +507,8 @@ class PageEditorState(
       } catch (e: Throwable) {
         error = if (e is OutOfMemoryError) "Not enough memory for Beautify all." else e.message ?: "Beautify all stopped."
       } finally {
-        beautifying = null
+        // (a stopped job must not clear the progress of the one that replaced it)
+        if (beautifyJob === coroutineContext[Job]) beautifying = null
         // finished or stopped: this page's view, notes and undo catch up
         notes = found[index]?.notes ?: emptyList()
         askAngle = found[index]?.askAngle
@@ -545,7 +553,7 @@ class PageEditorState(
   fun acceptAskAngle() {
     val a = askAngle ?: return
     askAngle = null
-    setBeauty { it.copy(deskew = a) }
+    setBeauty { it.copy(deskew = a, foundDeskew = a) }
   }
 
   fun done() = onDone(recipes.toList())

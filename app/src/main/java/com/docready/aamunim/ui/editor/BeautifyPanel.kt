@@ -254,7 +254,7 @@ internal fun beautyOverlay(state: PageEditorState): (DrawScope.(Rect) -> Unit)? 
     }
     if (trim) {
       // what would be kept (the rest is the border)
-      b.foundTrim?.let { t -> drawPath(shownBox(t, b, r.crop, aspect, f), Amber, style = stroke) }
+      drawPath(shownBox(b.foundTrim, b, r.crop, aspect, f), Amber, style = stroke)
     }
   }
 }
