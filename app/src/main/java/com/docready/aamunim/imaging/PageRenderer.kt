@@ -132,7 +132,8 @@ object PageRenderer {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
-        strokeWidth = max(1f, s.radius / cw * b.width * 2f)
+        // the page before the crop box, in pixels of this picture: its shorter side sizes the brush
+        strokeWidth = max(1f, s.radius * min(b.width / cw, b.height / ch) * 2f)
       }
       val n = s.points.size / 2
       if (n == 0) continue

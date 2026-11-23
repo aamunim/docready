@@ -20,8 +20,9 @@ data class CropRect(val left: Float, val top: Float, val right: Float, val botto
 }
 
 /**
- * One brush stroke of the eraser: points (x, y, x, y…) and radius as parts of the page after
- * straightening and turning but before the crop box, so changing the crop never moves them.
+ * One brush stroke of the eraser: points (x, y, x, y…) as parts of the page after
+ * straightening and turning but before the crop box, so changing the crop never moves them;
+ * radius as a part of that page's shorter side, so a quarter turn never changes it.
  * [white]: painted white; else the paper's own colour.
  */
 @Serializable

@@ -235,6 +235,7 @@ class PageEditorState(
   fun update(new: PageRecipe, key: String? = null) {
     val old = recipe
     var r = new
+    if (key == null || key != lastKey) notice = null // (an older note is about an older step)
     // erasing is drawn on the straightened page: new corners or a new angle move everything under it
     if (old.erase.isNotEmpty() && (r.quad != old.quad || r.rotate != old.rotate)) {
       r = r.copy(erase = emptyList())
@@ -328,18 +329,16 @@ class PageEditorState(
    */
   fun turn() {
     val r = recipe
-    val geo = geometryImage
-    val aspect = geo?.let { it.width.toFloat() / max(1, it.height) }
+    // (the radius is a part of the page's shorter side: a turn leaves it as it is)
     val erase = when {
       r.erase.isEmpty() -> r.erase
-      aspect == null -> emptyList()
       else -> r.erase.map { st ->
         val pts = ArrayList<Float>(st.points.size)
         for (k in 0 until st.points.size / 2) {
           pts.add(1f - st.points[k * 2 + 1])
           pts.add(st.points[k * 2])
         }
-        EraseStroke(pts, st.radius * aspect, st.white)
+        EraseStroke(pts, st.radius, st.white)
       }
     }
     val crop = r.crop?.let { CropRect(1f - it.bottom, it.left, 1f - it.top, it.right) }
@@ -351,7 +350,16 @@ class PageEditorState(
     if (points.size < 2) return
     val crop = recipe.crop ?: CropRect(0f, 0f, 1f, 1f)
     val pts = points.mapIndexed { i, v -> if (i % 2 == 0) crop.left + v * crop.width else crop.top + v * crop.height }
-    update(recipe.copy(erase = recipe.erase + EraseStroke(pts, brushSize * crop.width, brushWhite)))
+    // the brush was sized on the shown page (its width): as a part of the uncropped page's shorter side
+    val shown = preview
+    val radius = if (shown != null) {
+      val pageW = shown.width / max(0.0001f, crop.width)
+      val pageH = shown.height / max(0.0001f, crop.height)
+      brushSize * shown.width / min(pageW, pageH)
+    } else {
+      brushSize
+    }
+    update(recipe.copy(erase = recipe.erase + EraseStroke(pts, radius, brushWhite)))
   }
 
   fun done() = onDone(recipes.toList())

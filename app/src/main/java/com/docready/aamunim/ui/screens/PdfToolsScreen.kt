@@ -299,7 +299,10 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
                 singlePdf = if (filesAdded == 1 && total <= PdfTools.PAGE_LIMIT) f else null
               }
             } else {
-              val shown = withContext(Dispatchers.Default) { listThumb(DocTools.load(ctx, Uri.fromFile(f), 400)) }
+              // the tile shows the photo as it will come out (shadows removed, colour evened)
+              val shown = withContext(Dispatchers.Default) {
+                listThumb(PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), 400), PageRecipe.Document))
+              }
               val page = PdfPage(shown, name, f.length(), f, -1)
               // a photo of paper: shadows removed, colour evened (changeable in the editor)
               recipes[page] = PageRecipe.Document
