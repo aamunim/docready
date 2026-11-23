@@ -17,7 +17,10 @@ enum class PhotoBackground(val argb: Int?) {
   KEEP(null),
 }
 
-/** One file a form asks for. null width/height on a document = A4 pages; null maxKb = no limit. */
+/**
+ * One file a form asks for. null width/height on a document = A4 pages; null maxKb = no limit.
+ * [name]: what the form calls it ("SSC certificate"); also the file's name.
+ */
 @Serializable
 data class PresetItem(
   val kind: ItemKind,
@@ -26,6 +29,7 @@ data class PresetItem(
   val maxKb: Int? = null,
   val format: OutputFormat = OutputFormat.JPG,
   val background: PhotoBackground? = null,
+  val name: String? = null,
 )
 
 @Serializable

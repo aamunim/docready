@@ -15,9 +15,27 @@ val PhotoBackground.label: String
     PhotoBackground.KEEP -> "Keep original"
   }
 
+/** The item's own name, else its kind ("SSC certificate", "Photo") */
+val PresetItem.title: String
+  get() = name?.trim()?.takeIf { it.isNotEmpty() } ?: kind.label
+
+/** "photo_300x300", "ssc_certificate": the ready file's name, without its extension */
+fun PresetItem.fileBase(): String {
+  val own = name?.trim()?.takeIf { it.isNotEmpty() }
+  if (own != null) {
+    return own.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').take(50).ifEmpty { kind.name.lowercase() }
+  }
+  return when (kind) {
+    ItemKind.PHOTO -> "photo_${widthPx ?: 300}x${heightPx ?: 300}"
+    ItemKind.SIGNATURE -> "signature_${widthPx ?: 300}x${heightPx ?: 80}"
+    ItemKind.DOCUMENT -> "document"
+  }
+}
+
 /** "Photo · 300×300 px · max 100 KB · JPG" */
 fun PresetItem.summary(): String {
-  val parts = mutableListOf(kind.label)
+  val parts = mutableListOf(title)
+  if (title != kind.label) parts.add(kind.label.lowercase())
   if (widthPx != null && heightPx != null) parts.add("$widthPx×$heightPx px") else if (kind == ItemKind.DOCUMENT) parts.add("A4")
   parts.add(maxKb?.let { "max ${kbText(it)}" } ?: "no size limit")
   parts.add(format.name)
