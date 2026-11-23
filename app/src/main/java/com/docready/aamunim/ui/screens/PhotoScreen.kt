@@ -3,6 +3,7 @@ package com.docready.aamunim.ui.screens
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.RectF
 import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -33,6 +34,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -69,6 +71,8 @@ import com.docready.aamunim.intake.IntakeTarget
 import com.docready.aamunim.save.ReadyFile
 import com.docready.aamunim.ui.components.BottomActions
 import com.docready.aamunim.ui.components.BusyRow
+import com.docready.aamunim.ui.components.CropBox
+import com.docready.aamunim.ui.components.NormBox
 import com.docready.aamunim.ui.components.DocTopBar
 import com.docready.aamunim.ui.components.ErrorText
 import com.docready.aamunim.ui.components.ImageSourceButtons
@@ -135,13 +139,91 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
     set(v) {
       widthState = v
       edited()
+      manual = null // a crop chosen by hand had the old shape
     }
   var heightText: String
     get() = heightState
     set(v) {
       heightState = v
       edited()
+      manual = null
     }
+
+  // ---- the crop by hand (after the face crop): a box of the photo's shape on the source photo
+  /** The source photo, small enough to show */
+  var sourcePreview by mutableStateOf<ImageBitmap?>(null)
+    private set
+  private var srcW = 1
+  private var srcH = 1
+
+  /** What the last face crop showed (parts of the source), to start the hand crop from */
+  private var autoFrame: NormBox? = null
+
+  /** The crop chosen by hand (parts of the source); null = the face crop */
+  var manual by mutableStateOf<NormBox?>(null)
+    private set
+  var adjusting by mutableStateOf(false)
+    private set
+  var adjustBox by mutableStateOf(NormBox.Default)
+
+  /** The box's height / width in parts of the source, for the asked W x H */
+  fun boxRatio(): Float? {
+    val w = widthText.toIntOrNull() ?: return null
+    val h = heightText.toIntOrNull() ?: return null
+    if (w <= 0 || h <= 0) return null
+    return (h.toFloat() / w) * (srcW.toFloat() / srcH)
+  }
+
+  fun startAdjust() {
+    val r = boxRatio()
+    if (r == null || sourcePreview == null) {
+      error = "Write the width and height first."
+      return
+    }
+    adjustBox = fitRatio(manual ?: autoFrame ?: NormBox.centered(r), r)
+    adjusting = true
+  }
+
+  fun cancelAdjust() {
+    adjusting = false
+  }
+
+  fun applyAdjust() {
+    manual = adjustBox
+    adjusting = false
+    edited()
+    process()
+  }
+
+  fun useAutoCrop() {
+    manual = null
+    adjusting = false
+    edited()
+    process()
+  }
+
+  /** [b] given the shape [r], around its middle, inside it and the picture */
+  private fun fitRatio(b: NormBox, r: Float): NormBox {
+    val cx = (b.left + b.right) / 2f
+    val cy = (b.top + b.bottom) / 2f
+    var w = b.width
+    var h = w * r
+    if (h > b.height) {
+      h = b.height
+      w = h / r
+    }
+    if (w > 1f) {
+      w = 1f
+      h = w * r
+    }
+    if (h > 1f) {
+      h = 1f
+      w = h / r
+    }
+    val l = (cx - w / 2f).coerceIn(0f, 1f - w)
+    val t = (cy - h / 2f).coerceIn(0f, 1f - h)
+    return NormBox(l, t, l + w, t + h)
+  }
   var maxKbText: String
     get() = maxKbState
     set(v) {
@@ -199,6 +281,16 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
             if (brightness < 60) notes.add("The photo is dark. Take it in good, even light.")
             qualityNotes = notes
             src = b
+            srcW = b.width
+            srcH = b.height
+            val k = minOf(1f, 1200f / maxOf(b.width, b.height))
+            val shown = Bitmap.createScaledBitmap(b, maxOf(1, (b.width * k).toInt()), maxOf(1, (b.height * k).toInt()), true)
+            withContext(Dispatchers.Main) {
+              sourcePreview = shown.asImageBitmap()
+              manual = null
+              adjusting = false
+            }
+            autoFrame = null
             levelled = null
             faces = emptyList()
             facesFound = false
@@ -247,6 +339,7 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
     val bg = background
     val pct = headSize
     val enh = enhance
+    val hand = manual
     val my = ++version
     val editsNow = edits
     stale = true
@@ -277,7 +370,14 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
             // light and contrast are evened on the photo itself, before the new background goes
             // in (evening it after would stretch a light blue / grey background to white)
             val base = if (enh) levelled ?: DocTools.autoLevels(s.copy(Bitmap.Config.ARGB_8888, true)).also { levelled = it } else s
-            val made = DocPhoto.make(base, w, h, 2000, pct, bg.argb, faces.firstOrNull(), mask, notes)
+            val handRect = hand?.let { RectF(it.left * s.width, it.top * s.height, it.right * s.width, it.bottom * s.height) }
+            val made = DocPhoto.make(base, w, h, 2000, pct, bg.argb, faces.firstOrNull(), mask, notes, handRect)
+            if (hand == null) {
+              val f = made.frame
+              autoFrame = NormBox(f.left / s.width, f.top / s.height, f.right / s.width, f.bottom / s.height)
+            } else {
+              notes.add("Cropped by hand.")
+            }
             val fit = DocTools.fitPicture(made.bitmap, kb?.let { it * 1024L }, true)
             val name = "photo_${w}x$h.jpg"
             val file = FileNames.outputFile(ctx, name)
@@ -392,6 +492,30 @@ private fun PhotoEditor(vm: PhotoViewModel) {
             if (preview != null) {
               Image(preview, contentDescription = "The ready photo", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
             }
+          }
+        }
+      }
+      val shownSource = vm.sourcePreview
+      if (vm.adjusting && shownSource != null) {
+        VSpace(12)
+        Text(
+          "Drag the box to move it, a corner to make it bigger or smaller. It keeps the photo's shape.",
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        VSpace(8)
+        CropBox(shownSource, vm.adjustBox, { vm.adjustBox = it }, fixedRatio = vm.boxRatio())
+        VSpace(8)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          Button(onClick = { vm.applyAdjust() }, enabled = vm.busy == null) { Text("Use this crop") }
+          OutlinedButton(onClick = { vm.cancelAdjust() }) { Text("Cancel") }
+        }
+      } else {
+        VSpace(8)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+          OutlinedButton(onClick = { vm.startAdjust() }, enabled = vm.busy == null && shownSource != null) { Text("Adjust crop") }
+          if (vm.manual != null) {
+            TextButton(onClick = { vm.useAutoCrop() }, enabled = vm.busy == null) { Text("Back to face crop") }
           }
         }
       }

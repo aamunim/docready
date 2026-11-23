@@ -545,6 +545,26 @@ object DocTools {
     return out
   }
 
+  /**
+   * A page straightened from its four corners (when they make a real shape) and turned by
+   * 0 / 90 / 180 / 270 degrees. [src] is used up (recycled when a new picture is made).
+   */
+  fun straighten(src: Bitmap, quad: FloatArray?, turn: Int): Bitmap {
+    var b = src
+    if (quad != null && isConvex(quad)) {
+      val flat = warp(b, quad)
+      b.recycle()
+      b = flat
+    }
+    if (turn % 360 != 0) {
+      val m = Matrix().apply { postRotate(turn.toFloat()) }
+      val turned = Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
+      if (turned !== b) b.recycle()
+      b = turned
+    }
+    return b
+  }
+
   /** A part of a picture (as parts of it, 0–1), turned by 0 / 90 / 180 / 270 */
   fun cut(src: Bitmap, x: Float, y: Float, w: Float, h: Float, turn: Int = 0): Bitmap {
     val sx = (x.coerceIn(0f, 1f) * src.width).roundToInt().coerceIn(0, src.width - 1)

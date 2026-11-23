@@ -3,8 +3,13 @@ package com.docready.aamunim.ui.screens
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Matrix
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -32,10 +37,12 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -55,6 +62,7 @@ import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.data.model.OutputFormat
 import com.docready.aamunim.docReady
 import com.docready.aamunim.imaging.DocTools
+import com.docready.aamunim.imaging.PdfTools
 import com.docready.aamunim.imaging.SignatureTools
 import com.docready.aamunim.intake.Intake
 import com.docready.aamunim.intake.IntakeTarget
@@ -225,7 +233,9 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
             val ink = SignatureTools.inkOf(piece)
               ?: throw IllegalStateException("No signature found: put the box closely around the signature, on plain paper.")
             val placed = SignatureTools.place(ink, w, h, png)
-            ink.recycle()
+            // the cleaned ink is kept, to be placed on a form's page
+            val shownInk = DocTools.scaleToMax(ink.copy(Bitmap.Config.ARGB_8888, false), 600).asImageBitmap()
+            withContext(Dispatchers.Main) { setInk(ink, shownInk) }
             val maxBytes = kb?.let { it * 1024L }
             val bytes: ByteArray
             val fits: Boolean
@@ -259,6 +269,159 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
       }
     }
   }
+
+  // ---- the signature placed on a form's page (the ported placeSignature)
+  private var ink: Bitmap? = null
+  var inkPreview by mutableStateOf<ImageBitmap?>(null)
+    private set
+  private var inkRatio = 0.3f
+
+  /** The form's pages (pictures; a PDF's pages rendered) */
+  val formPages = mutableStateListOf<File>()
+  var formIndex by mutableStateOf(0)
+    private set
+  var formImage by mutableStateOf<ImageBitmap?>(null)
+    private set
+  private var formW = 1
+  private var formH = 1
+  private var placeBoxState by mutableStateOf(NormBox.Default)
+  var placeBox: NormBox
+    get() = placeBoxState
+    set(v) {
+      placeBoxState = v
+      placeResult = null
+    }
+  var placeFormat by mutableStateOf(OutputFormat.PDF)
+  var placeMaxKbText by mutableStateOf("")
+  var placeResult by mutableStateOf<FilesResult?>(null)
+
+  private fun setInk(b: Bitmap, shown: ImageBitmap) {
+    ink = b // (the old one may still be drawn: Android frees it)
+    inkPreview = shown
+    inkRatio = b.height.toFloat() / maxOf(1, b.width)
+    placeResult = null
+    if (formImage != null) placeBoxState = startBox()
+  }
+
+  /** The signature box's height / width in parts of the page */
+  fun placeRatio(): Float = inkRatio * formW / maxOf(1, formH)
+
+  private fun startBox(): NormBox {
+    val r = placeRatio()
+    var w = 0.35f
+    var h = w * r
+    if (h > 0.2f) {
+      h = 0.2f
+      w = h / r
+    }
+    val l = 0.6f.coerceAtMost(1f - w)
+    val t = 0.75f.coerceAtMost(1f - h)
+    return NormBox(l, t, l + w, t + h)
+  }
+
+  /** A form page chosen: a photo, or a PDF (its pages rendered, the first shown) */
+  fun openForm(uri: Uri) {
+    viewModelScope.launch {
+      busy = "Opening the page…"
+      error = null
+      try {
+        val files = withContext(Dispatchers.IO) {
+          val type = ctx.contentResolver.getType(uri) ?: ""
+          val name = FileNames.displayName(ctx, uri)?.lowercase() ?: ""
+          if (type == "application/pdf" || name.endsWith(".pdf")) {
+            PdfTools.render(ctx, FileNames.copyIn(ctx, uri, "pdf"), maxSide = 2000, maxPages = 30).pages
+          } else {
+            listOf(FileNames.copyIn(ctx, uri, "img"))
+          }
+        }
+        if (files.isEmpty()) throw IllegalStateException("This PDF has no pages.")
+        formPages.clear()
+        formPages.addAll(files)
+        showFormPage(0)
+      } catch (e: Throwable) {
+        error = messageOf(e, "The page could not be opened.")
+      } finally {
+        busy = null
+      }
+    }
+  }
+
+  fun showFormPage(index: Int) {
+    val f = formPages.getOrNull(index) ?: return
+    viewModelScope.launch {
+      try {
+        val b = withContext(Dispatchers.Default) { DocTools.load(ctx, Uri.fromFile(f), 1400) }
+        formW = b.width
+        formH = b.height
+        formIndex = index
+        formImage = b.asImageBitmap()
+        placeBoxState = startBox()
+        placeResult = null
+      } catch (e: Throwable) {
+        error = messageOf(e, "The page could not be opened.")
+      }
+    }
+  }
+
+  fun closeForm() {
+    formPages.clear()
+    formImage = null
+    placeResult = null
+  }
+
+  /** The page with the signature drawn into its box, as a JPG or a one-page PDF */
+  fun makePage() {
+    val signature = ink ?: return
+    val f = formPages.getOrNull(formIndex) ?: return
+    val kb = placeMaxKbText.toIntOrNull()
+    if (kb != null && kb !in 10..50_000) {
+      error = "Max KB: 10 to 50000 (or leave it empty for no limit)."
+      return
+    }
+    val box = placeBox
+    val asPdf = placeFormat == OutputFormat.PDF
+    viewModelScope.launch {
+      busy = "Placing the signature…"
+      error = null
+      try {
+        placeResult = withContext(Dispatchers.Default) {
+          val page = DocTools.mutable(DocTools.load(ctx, Uri.fromFile(f), 2400))
+          Canvas(page).drawBitmap(
+            signature,
+            null,
+            RectF(box.left * page.width, box.top * page.height, box.right * page.width, box.bottom * page.height),
+            Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG),
+          )
+          val maxBytes = kb?.let { it * 1024L }
+          if (asPdf) {
+            val kept = DocTools.keepPage(ctx, page)
+            val name = "signed_page.pdf"
+            val out = FileNames.outputFile(ctx, name)
+            val (size, _, fits) = DocTools.fitPdf(listOf(kept), maxBytes, out)
+            FilesResult(
+              listOf(ReadyFile(out, name, "application/pdf")),
+              DocTools.thumbnail(kept, 600)?.asImageBitmap(),
+              size, size, kb, fits, 1, OutputFormat.PDF,
+            )
+          } else {
+            val fit = DocTools.fitPicture(page, maxBytes, false)
+            val name = "signed_page.jpg"
+            val out = FileNames.outputFile(ctx, name)
+            out.writeBytes(fit.bytes)
+            FilesResult(
+              listOf(ReadyFile(out, name, "image/jpeg")),
+              DocTools.thumbnail(out, 600)?.asImageBitmap(),
+              fit.bytes.size.toLong(), fit.bytes.size.toLong(), kb, fit.fits, 1, OutputFormat.JPG,
+            )
+          }
+        }
+      } catch (e: Throwable) {
+        error = messageOf(e, "The page could not be made.")
+      } finally {
+        busy = null
+      }
+    }
+  }
 }
 
 @Composable
@@ -267,6 +430,8 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
   val vm: SignatureViewModel = viewModel { SignatureViewModel(app, presetId, itemIndex) }
   val source = rememberImageSource { vm.setSource(it) }
   var saving by rememberSaveable { mutableStateOf(false) }
+  var savingPage by rememberSaveable { mutableStateOf(false) }
+  val openForm = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) vm.openForm(uri) }
   val intake by Intake.request.collectAsState()
   LaunchedEffect(intake) {
     if (intake?.target == IntakeTarget.SIGNATURE) Intake.take(IntakeTarget.SIGNATURE).firstOrNull()?.let { vm.setSourceFile(it.file) }
@@ -357,6 +522,7 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
           VSpace(10)
           ImageResultCard(r, fromPreset = vm.preset != null)
           if (vm.stale && vm.busy == null) StaleNote("Something changed: tap “Make again” to update the signature.")
+          if (!vm.stale) PlaceOnPage(vm, { openForm.launch(arrayOf("image/*", "application/pdf")) }, { savingPage = true })
         }
       }
       if (vm.busy != null) BusyRow(vm.busy ?: "")
@@ -367,5 +533,60 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
   val ready = vm.result?.ready
   if (saving && ready != null) {
     SaveSheet(listOf(ready), defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { saving = false })
+  }
+  val page = vm.placeResult
+  if (savingPage && page != null) {
+    SaveSheet(page.files, defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { savingPage = false })
+  }
+}
+
+/** Optional: the cleaned signature dragged and sized on a form's page, saved as JPG or PDF */
+@Composable
+private fun PlaceOnPage(vm: SignatureViewModel, choosePage: () -> Unit, savePage: () -> Unit) {
+  val ink = vm.inkPreview ?: return
+  SectionLabel("Place on a form page (optional)")
+  val form = vm.formImage
+  if (form == null) {
+    Text(
+      "Sign a form page without printing it: choose a photo or PDF of the page, then drag the signature into place.",
+      style = MaterialTheme.typography.bodyMedium,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    VSpace(8)
+    OutlinedButton(onClick = choosePage, enabled = vm.busy == null) { Text("Choose the page (photo or PDF)") }
+    return
+  }
+  if (vm.formPages.size > 1) {
+    ChoiceChips(vm.formPages.indices.toList(), vm.formIndex, { "Page ${it + 1}" }, { vm.showFormPage(it) })
+    VSpace(8)
+  }
+  Text(
+    "Drag the signature into place; drag a corner to make it bigger or smaller.",
+    style = MaterialTheme.typography.bodySmall,
+    color = MaterialTheme.colorScheme.onSurfaceVariant,
+  )
+  VSpace(6)
+  CropBox(form, vm.placeBox, { vm.placeBox = it }, fixedRatio = vm.placeRatio(), overlay = ink, maxHeight = 460)
+  VSpace(8)
+  ChoiceChips(listOf(OutputFormat.PDF, OutputFormat.JPG), vm.placeFormat, { if (it == OutputFormat.PDF) "PDF" else "JPG" }, {
+    vm.placeFormat = it
+    vm.placeResult = null
+  })
+  VSpace(8)
+  NumberField("Max KB (empty = no limit)", vm.placeMaxKbText, {
+    vm.placeMaxKbText = it
+    vm.placeResult = null
+  }, Modifier.fillMaxWidth())
+  VSpace(8)
+  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Button(onClick = { vm.makePage() }, enabled = vm.busy == null) { Text("Make the page") }
+    OutlinedButton(onClick = choosePage, enabled = vm.busy == null) { Text("Other page") }
+    TextButton(onClick = { vm.closeForm() }) { Text("Close") }
+  }
+  vm.placeResult?.let { r ->
+    VSpace(10)
+    FilesResultCard(r)
+    VSpace(8)
+    Button(onClick = savePage, enabled = vm.busy == null, modifier = Modifier.fillMaxWidth()) { Text("Save or share the page") }
   }
 }

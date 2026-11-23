@@ -28,8 +28,12 @@ object Intake {
   private val _request = MutableStateFlow<IntakeRequest?>(null)
   val request: StateFlow<IntakeRequest?> = _request.asStateFlow()
 
+  /** Shared to the app, or opened with it ("Open with DocReady": a content link only) */
   fun isShare(intent: Intent?): Boolean =
-    intent != null && (intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE)
+    intent != null && (
+      intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE ||
+        (intent.action == Intent.ACTION_VIEW && intent.data?.scheme == "content")
+      )
 
   fun offer(files: List<IncomingFile>, skipped: Int) {
     if (files.isEmpty() && skipped == 0) return
@@ -63,6 +67,7 @@ object Intake {
     try {
       when (intent.action) {
         Intent.ACTION_SEND -> IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.let { uris.add(it) }
+        Intent.ACTION_VIEW -> intent.data?.let { uris.add(it) }
         Intent.ACTION_SEND_MULTIPLE ->
           IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.let { uris.addAll(it) }
       }

@@ -44,7 +44,8 @@ object DocPhoto {
 
   class Head(val topX: Float, val topY: Float, val chinX: Float, val chinY: Float, val roll: Float)
 
-  class Made(val bitmap: Bitmap, val fixedSize: Boolean)
+  /** [frame]: the part of the source the photo shows (source px; for the manual crop to start from) */
+  class Made(val bitmap: Bitmap, val fixedSize: Boolean, val frame: RectF)
 
   /** The faces, biggest first (px of the picture) */
   fun faces(b: Bitmap): List<FaceInfo> {
@@ -167,6 +168,7 @@ object DocPhoto {
   /**
    * The photo made: W x H, the head placed (or the whole photo filling the frame), the
    * background a colour ([bg] with a [mask]) or kept. [face]: the face to place (null = none).
+   * [manual]: a crop chosen by hand (source px, the shape of W x H): used instead of the face.
    * [notes]: what the user should look at.
    */
   fun make(
@@ -179,10 +181,11 @@ object DocPhoto {
     face: FaceInfo?,
     mask: FloatArray?,
     notes: MutableList<String>,
+    manual: RectF? = null,
   ): Made {
     val useMask = if (bg != null) mask else null
-    val head = face?.let { head(it, useMask, src.width, src.height) }?.takeIf { it.chinY > it.topY }
-    if (face != null && head == null) notes.add("The head could not be placed (a turned photo?): fitted as it is. Check it.")
+    val head = if (manual != null) null else face?.let { head(it, useMask, src.width, src.height) }?.takeIf { it.chinY > it.topY }
+    if (manual == null && face != null && head == null) notes.add("The head could not be placed (a turned photo?): fitted as it is. Check it.")
     if (head != null && abs(head.roll) > 12f) notes.add("The head leans a lot: straightened, but check it.")
     // the size asked; none: a passport's shape (35 x 45, 600 px wide) when the head is placed,
     // else the photo's own shape (nothing cut away)
@@ -201,7 +204,10 @@ object DocPhoto {
     }
 
     val m = Matrix()
-    if (head != null) {
+    if (manual != null && manual.width() > 1f && manual.height() > 1f) {
+      // the chosen part fills the frame (it already has the frame's shape)
+      m.setRectToRect(manual, RectF(0f, 0f, bigW.toFloat(), bigH.toFloat()), Matrix.ScaleToFit.FILL)
+    } else if (head != null) {
       val headPx = max(1f, hypot(head.chinX - head.topX, head.chinY - head.topY))
       val scale = (facePct / 100f) * bigH / headPx
       val topPct = max(3f, min(18f, (100f - facePct) * 0.3f))
@@ -243,8 +249,22 @@ object DocPhoto {
     } else {
       c.drawBitmap(src, m, paint)
     }
+    // the frame, back on the source (its outline's box, inside the picture)
+    val inv = Matrix()
+    val frame = if (m.invert(inv)) {
+      val p = floatArrayOf(0f, 0f, bigW.toFloat(), 0f, bigW.toFloat(), bigH.toFloat(), 0f, bigH.toFloat())
+      inv.mapPoints(p)
+      RectF(
+        max(0f, min(min(p[0], p[2]), min(p[4], p[6]))),
+        max(0f, min(min(p[1], p[3]), min(p[5], p[7]))),
+        min(src.width.toFloat(), max(max(p[0], p[2]), max(p[4], p[6]))),
+        min(src.height.toFloat(), max(max(p[1], p[3]), max(p[5], p[7]))),
+      )
+    } else {
+      RectF(0f, 0f, src.width.toFloat(), src.height.toFloat())
+    }
     // its size is fixed when it was asked, or the head was placed in it; else it may shrink to fit the weight
-    return Made(out, (width != null && height != null) || head != null)
+    return Made(out, (width != null && height != null) || head != null || manual != null, frame)
   }
 
   /** The placed photo moved (then made a little bigger) until it fills the W x H frame */

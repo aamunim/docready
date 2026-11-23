@@ -3,20 +3,24 @@
 A phone app (Android) that makes documents **ready to submit** to online forms, all on the
 phone, with no sign-in:
 
-- **Scan document**: Google's document scanner (edges, straightening, shadows) → one PDF or
-  JPG pictures, optionally under a size limit (KB).
+- **Scan document**: Google's document scanner (edges, straightening, shadows), or photos of
+  papers → corners adjustable by hand, quarter turns, a warning on blurry / dark pages → one
+  PDF or JPG pictures, optionally under a size limit (KB).
 - **Photo**: take or choose a photo → face found and centred (ML Kit face detection) →
   background White / Light blue / Grey / Keep (ML Kit subject segmentation) → exact W × H px
-  and at most N KB JPG, with a clear "Meets the preset" card or a warning.
+  and at most N KB JPG, with a clear "Meets the preset" card or a warning. The crop can be
+  adjusted by hand (a box of the asked shape).
 - **Signature**: take or choose → crop → only the ink kept, on white (JPG) or see-through
-  (PNG) → exact W × H px, at most N KB.
+  (PNG) → exact W × H px, at most N KB. Optionally placed on a form's page (photo or PDF
+  page): drag and size it, then save the page as JPG or PDF.
 - **PDF tools**: merge PDFs and photos into one PDF, reorder / delete pages, compress a PDF
   under N KB, both sides of the NID card on one A4 page.
 - **Presets**: built-in ones (copyable) and your own (photo / signature / document, size,
   max KB, format, background).
 - **Save**: to this phone (Downloads / DocReady / *folder*) or Share to any app. Files get
   readable names (`photo_300x300.jpg`) and are never overwritten (`-2`, `-3`…).
-- **Share to DocReady**: photos and PDFs shared from other apps open in PDF tools / Photo.
+- **Share to / Open with DocReady**: photos and PDFs shared or opened from other apps open
+  in PDF tools / Photo / Signature.
 
 Phase 1 is offline only: the app has **no internet permission** and no analytics. The ML Kit
 models are delivered by Google Play services (the app stays small, and the scanner needs no
