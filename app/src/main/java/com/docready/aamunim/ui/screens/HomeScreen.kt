@@ -56,6 +56,7 @@ fun HomeScreen(
   onPdfTools: () -> Unit,
   onSplit: () -> Unit,
   onPresets: () -> Unit,
+  onNewPreset: () -> Unit,
   onPreset: (String) -> Unit,
   onFolder: (String) -> Unit,
   onAccounts: () -> Unit,
@@ -117,6 +118,19 @@ fun HomeScreen(
         TextButton(onClick = onPresets) { Text("All presets") }
       }
       Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (presets.isEmpty()) {
+          // no presets yet: the way to make the first one
+          Surface(
+            onClick = onNewPreset,
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier.height(40.dp),
+          ) {
+            Box(Modifier.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
+              Text("+ Create a preset", color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+            }
+          }
+        }
         for (p in presets.take(8)) {
           Surface(
             onClick = { onPreset(p.id) },

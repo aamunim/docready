@@ -2,6 +2,7 @@ package com.docready.aamunim
 
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -44,7 +45,19 @@ class MainActivity : ComponentActivity() {
     if (intent == null || !Intake.isShare(intent)) return
     lifecycleScope.launch {
       val (files, skipped) = withContext(Dispatchers.IO) { Intake.copyShared(applicationContext, intent) }
-      Intake.offer(files, skipped)
+      // preset files are imported (checked strictly); the photos / PDFs go on to a screen
+      val (presetFiles, papers) = files.partition { it.isPreset }
+      for (f in presetFiles) {
+        val result = withContext(Dispatchers.IO) {
+          runCatching { docReady.presets.import(f.file) }.also { f.file.delete() }
+        }
+        val text = result.fold(
+          { "Preset “${it.name}” imported: see Presets." },
+          { "${f.name}: ${it.message ?: "not a DocReady preset."}" },
+        )
+        Toast.makeText(this@MainActivity, text, Toast.LENGTH_LONG).show()
+      }
+      if (papers.isNotEmpty() || (presetFiles.isEmpty() && skipped > 0)) Intake.offer(papers, skipped)
     }
     // taken: a rebuilt screen does not take it again
     setIntent(Intent(Intent.ACTION_MAIN))

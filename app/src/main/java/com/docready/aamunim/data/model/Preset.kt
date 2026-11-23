@@ -30,6 +30,10 @@ data class PresetItem(
   val format: OutputFormat = OutputFormat.JPG,
   val background: PhotoBackground? = null,
   val name: String? = null,
+  /** The form can't be sent without it (false = optional) */
+  val required: Boolean = true,
+  /** A document's pages, as the form says ("1-2"); a hint only */
+  val pagesHint: String? = null,
 )
 
 @Serializable
@@ -37,6 +41,7 @@ data class Preset(
   val id: String,
   val name: String,
   val items: List<PresetItem>,
+  /** (older versions had read-only built-in presets; kept only so their saved copies still load) */
   val builtIn: Boolean = false,
   val updatedAt: Long = 0L,
 )

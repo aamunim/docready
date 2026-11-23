@@ -183,7 +183,11 @@ object DocTools {
     val px = IntArray(w * h)
     src.getPixels(px, 0, w, 0, 0, w, h)
     val gray = IntArray(w * h) { lum(px[it]) }
-    // fits an Int: at most 255 × 8 million dots (pictures here are smaller)
+    // An Int table on purpose (half the memory of a Long one on a 3500 px page): entries may wrap
+    // past Int.MAX_VALUE on pictures over ~8.4 million dots, but each window's sum below is a
+    // difference of four entries, and wrapping (two's complement) arithmetic gives that
+    // difference exactly as long as the window's own sum fits an Int — at most 255 × (w/16+1)²,
+    // about 12 million for a 3500 px page.
     val integral = IntArray((w + 1) * (h + 1))
     for (y in 0 until h) {
       var row = 0
@@ -531,7 +535,7 @@ object DocTools {
       for (x in 0 until w) {
         val i = y * w + x
         if (lum(px[i]) < 128) {
-          px[i] = Color.argb(255, 12, 20, 60) // dark blue-black ink
+          px[i] = Color.argb(255, 20, 20, 20) // near-black ink
           if (x < x0) x0 = x
           if (y < y0) y0 = y
           if (x > x1) x1 = x

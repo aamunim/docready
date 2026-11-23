@@ -22,14 +22,31 @@ phone, with no sign-in:
   or shared. Offered when a PDF or several files are shared / opened with the app. PDFs of up
   to 150 pages: only small page pictures are made when it opens ("Reading page X of N"); full
   pages are made from the PDF when the files are made.
-- **Presets**: built-in ones (copyable) and your own (named items: photo / signature /
-  document such as "SSC certificate", size, max KB, format, background).
+- **Presets**: all made by the user (none built in). Each preset lists the papers a form asks
+  for: + Document / + Photo / + Signature, each with a name in any script, W × H px, max KB,
+  format, background, a pages hint and Required; reorder, duplicate, delete. Share a preset as
+  a small `<name>.docready.json` file (WhatsApp, e-mail…) and import it from the file picker or
+  by sharing / opening it with DocReady (checked strictly: size cap, format mark, sane numbers).
+- **Page editor** (shared by Scan, PDF tools, Split, Photo, Signature and the signature's form
+  page): pinch zoom, hold to compare; Crop (four corners with Find edges, free crop, fine
+  straighten ±15°, turn 90°), Clean (remove shadows, Original / Auto color / Grey / B&W /
+  Whiten, brightness, contrast), Erase (brush in paper colour or white); undo / redo, reset,
+  apply the look to all pages. Edits are a per-page recipe: the preview is made at screen size,
+  the full page from the untouched source only when files are made. New document pages start
+  with shadows removed and Auto color; the photo editor offers crop / rotate / light / erase,
+  the signature editor crop / rotate / erase / contrast.
 - **Save**: to this phone (Downloads / DocReady / *folder*) or Share to any app. Files get
   readable names (`photo_300x300.jpg`) and are never overwritten (`-2`, `-3`…).
 - **Share to / Open with DocReady**: photos and PDFs shared or opened from other apps open
   in PDF tools / Photo / Signature.
 
-Phase 1 is offline only: the app has **no internet permission** and no analytics. The ML Kit
+Phase 1 is offline only: the app has **no internet permission** and no analytics.
+
+Colours: deep green (#1B6B3A; #8FD19E in dark mode) on warm neutral greys, amber for
+warnings; no blue anywhere in the interface (the "Light blue" photo background is an output
+colour for form photos, not UI).
+
+The ML Kit
 models are delivered by Google Play services (the app stays small, and the scanner needs no
 camera permission).
 

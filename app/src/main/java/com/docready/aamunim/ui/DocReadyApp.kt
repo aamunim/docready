@@ -81,6 +81,7 @@ fun DocReadyApp() {
         onPdfTools = { nav.navigate(Routes.PDF) },
         onSplit = { nav.navigate(Routes.SPLIT) },
         onPresets = { nav.navigate(Routes.PRESETS) },
+        onNewPreset = { nav.navigate(Routes.presetEdit("new")) },
         onPreset = { nav.navigate(Routes.preset(it)) },
         onFolder = { nav.navigate(Routes.folder(it)) },
         onAccounts = { nav.navigate(Routes.ACCOUNTS) },
@@ -88,15 +89,15 @@ fun DocReadyApp() {
     }
     composable(Routes.PHOTO, arguments = toolArgs) { entry ->
       val args = entry.arguments
-      PhotoScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back)
+      PhotoScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) })
     }
     composable(Routes.SIGNATURE, arguments = toolArgs) { entry ->
       val args = entry.arguments
-      SignatureScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back)
+      SignatureScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) })
     }
     composable(Routes.SCAN, arguments = toolArgs) { entry ->
       val args = entry.arguments
-      ScanScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back)
+      ScanScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) })
     }
     composable(Routes.PDF) { PdfToolsScreen(back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }) }
     // (a destination of its own: Share / Open with can land in it while PDF tools is open)

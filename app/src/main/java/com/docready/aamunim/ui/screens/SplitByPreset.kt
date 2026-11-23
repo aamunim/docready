@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -50,6 +51,8 @@ import com.docready.aamunim.data.FileNames
 import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.data.model.OutputFormat
 import com.docready.aamunim.data.model.PhotoBackground
+import com.docready.aamunim.data.model.Look
+import com.docready.aamunim.data.model.PageRecipe
 import com.docready.aamunim.data.model.Preset
 import com.docready.aamunim.data.model.PresetItem
 import com.docready.aamunim.data.model.bytesText
@@ -67,12 +70,9 @@ import com.docready.aamunim.ui.components.BusyRow
 import com.docready.aamunim.ui.components.CropBox
 import com.docready.aamunim.ui.components.ErrorText
 import com.docready.aamunim.ui.components.NormBox
-import com.docready.aamunim.ui.components.QuadBox
 import com.docready.aamunim.ui.components.ResultCard
 import com.docready.aamunim.ui.components.SectionLabel
 import com.docready.aamunim.ui.components.VSpace
-import com.docready.aamunim.ui.components.fullQuad
-import com.docready.aamunim.ui.components.isFullQuad
 import com.docready.aamunim.ui.theme.DocReadyColors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -89,8 +89,6 @@ class SplitItemResult(
   val note: String?,
 )
 
-/** A page straightened by hand: its corners (null = the whole page) and a quarter-turn count */
-class PageFix(val quad: FloatArray?, val turn: Int)
 
 /**
  * "Split by preset": the pages of a merged PDF (and / or photos) given out to a preset's items
@@ -99,7 +97,14 @@ class PageFix(val quad: FloatArray?, val turn: Int)
  * exact W × H, under its KB; a signature → cut, ink only, exact W × H, under its KB.
  * Held by [PdfToolsViewModel]; the pages are its page list.
  */
-class SplitState(private val ctx: Application, private val scope: CoroutineScope) {
+class SplitState(
+  private val ctx: Application,
+  private val scope: CoroutineScope,
+  /** Each page's edits (shared with PDF tools: one page editor for both) */
+  private val recipes: Map<PdfPage, PageRecipe>,
+  /** Small pictures of edited pages */
+  val thumbs: Map<PdfPage, ImageBitmap>,
+) {
   var preset by mutableStateOf<Preset?>(null)
     private set
 
@@ -115,8 +120,6 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
 
   /** The page each cut was drawn on: a cut is used only while that page is still the item's first */
   private val cropPages = mutableMapOf<Int, PdfPage>()
-  val fixes = mutableStateMapOf<PdfPage, PageFix>()
-  val fixedThumbs = mutableStateMapOf<PdfPage, ImageBitmap>()
   var busy by mutableStateOf<String?>(null)
   var error by mutableStateOf<String?>(null)
   var results by mutableStateOf<List<SplitItemResult>?>(null)
@@ -174,48 +177,40 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
     val present = pages.toSet()
     assigned.keys.filter { it !in present }.forEach { assigned.remove(it) }
     selected.removeAll { it !in present }
-    fixes.keys.filter { it !in present }.forEach { fixes.remove(it) }
-    fixedThumbs.keys.filter { it !in present }.forEach { fixedThumbs.remove(it) }
     for (i in crops.keys.toList()) {
       if (cropPages[i] == null || pagesOf(i, pages).firstOrNull() !== cropPages[i]) dropCrop(i)
     }
     results = null
   }
 
-  /** A page as it will be used: straightened / turned as fixed, its longer side at most [maxSide] */
-  private fun prepared(page: PdfPage, maxSide: Int): Bitmap {
-    val fix = fixes[page]
-    val q = fix?.quad?.takeIf { DocTools.isConvex(it) }
-    val b = DocTools.load(ctx, Uri.fromFile(page.file(ctx)), if (q != null) 2600 else maxSide)
-    return DocTools.scaleToMax(DocTools.straighten(b, q, fix?.turn ?: 0), maxSide)
+  /** Pages edited in the page editor: a cut drawn on the old look / geometry no longer fits */
+  fun onRecipesChanged(changed: Collection<PdfPage>) {
+    for (page in changed) assigned[page]?.let { dropCrop(it) }
+    if (changed.isNotEmpty()) results = null
+  }
+
+  /** A page as it will be used: made from its source with its edits, its longer side at most [maxSide] */
+  private fun prepared(page: PdfPage, maxSide: Int, faceSafe: Boolean = false): Bitmap =
+    page.rendered(ctx, recipeOf(page, faceSafe), maxSide)
+
+  /**
+   * The page's edits; [faceSafe] (a face photo): its geometry, light and erasing only — a face is
+   * never flattened by "remove shadows" or turned grey / black & white.
+   */
+  private fun recipeOf(page: PdfPage, faceSafe: Boolean): PageRecipe {
+    val r = recipes[page] ?: PageRecipe.Plain
+    return if (faceSafe) r.copy(look = Look.ORIGINAL, removeShadows = false) else r
   }
 
   /**
-   * The page in more detail, for cutting a small photo / signature out of it: a PDF page rendered
-   * again from its PDF, a photo loaded again from itself (long side up to [CUT_SIDE]). The corners
-   * and turn are parts of the page, so they apply the same way. Falls back to the kept page.
+   * The page in more detail, for cutting a small photo / signature out of it: made again from
+   * its PDF / photo with its long side up to [CUT_SIDE], its edits applied the same way (they are
+   * parts of the page). A phone short of memory gets the usual page.
    */
-  private fun preparedForCut(page: PdfPage): Bitmap {
-    val src = page.source
-    val big: Bitmap? = try {
-      when {
-        src == null -> null
-        page.pdfPage >= 0 -> PdfTools.renderPage(src, page.pdfPage, CUT_SIDE)
-        else -> DocTools.load(ctx, Uri.fromFile(src), CUT_SIDE)
-      }
-    } catch (_: Throwable) {
-      null // (memory or a file gone: the kept page is used)
-    }
-    if (big == null) return prepared(page, 2400)
-    val fix = fixes[page]
-    val q = fix?.quad?.takeIf { DocTools.isConvex(it) }
-    return try {
-      DocTools.straighten(big, q, fix?.turn ?: 0)
-    } catch (_: OutOfMemoryError) {
-      // a turn / straightening needs a second big picture: the kept page instead
-      if (!big.isRecycled) big.recycle()
-      prepared(page, 2400)
-    }
+  private fun preparedForCut(page: PdfPage, faceSafe: Boolean = false): Bitmap = try {
+    page.rendered(ctx, recipeOf(page, faceSafe), CUT_SIDE)
+  } catch (_: OutOfMemoryError) {
+    prepared(page, 2400, faceSafe)
   }
 
   // ---- the region of a photo / signature item, cut by hand
@@ -274,87 +269,6 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
   fun clearCrop(item: Int) {
     dropCrop(item)
     results = null
-  }
-
-  // ---- a page straightened by hand (the scan corner editor)
-  var fixing by mutableStateOf<PdfPage?>(null)
-    private set
-  var fixImage by mutableStateOf<ImageBitmap?>(null)
-    private set
-  var fixQuad by mutableStateOf(fullQuad())
-  var fixTurn by mutableStateOf(0)
-    private set
-  private var fixBitmap: Bitmap? = null
-
-  fun startFix(page: PdfPage) {
-    scope.launch {
-      try {
-        val b = withContext(Dispatchers.Default) { DocTools.load(ctx, Uri.fromFile(page.file(ctx)), 1400) }
-        fixBitmap = b
-        fixImage = b.asImageBitmap()
-        val fix = fixes[page]
-        fixQuad = fix?.quad?.copyOf() ?: fullQuad()
-        fixTurn = fix?.turn ?: 0
-        fixing = page
-      } catch (e: Throwable) {
-        error = messageOf(e, "The page could not be opened.")
-      }
-    }
-  }
-
-  fun turnFix() {
-    fixTurn = (fixTurn + 90) % 360
-  }
-
-  fun findEdges() {
-    val b = fixBitmap ?: return
-    scope.launch {
-      try {
-        val q = withContext(Dispatchers.Default) { DocTools.findPaper(b) }
-        if (q != null) fixQuad = q else error = "No clear paper edges found: drag the corners by hand."
-      } catch (e: Throwable) {
-        error = messageOf(e, "The paper's edges could not be found: drag the corners by hand.")
-      }
-    }
-  }
-
-  fun cancelFix() {
-    fixing = null
-    fixImage = null
-    fixBitmap = null // (may still be drawn: Android frees it)
-  }
-
-  fun applyFix() {
-    val page = fixing ?: return
-    val q = fixQuad.copyOf().takeIf { !isFullQuad(it) }
-    if (q != null && !DocTools.isConvex(q)) {
-      error = "The corners cross each other: put each one on its own corner of the paper."
-      return
-    }
-    val turn = fixTurn
-    scope.launch {
-      busy = "Straightening the page…"
-      try {
-        val thumb = withContext(Dispatchers.Default) {
-          val b = DocTools.straighten(DocTools.load(ctx, Uri.fromFile(page.file(ctx)), 800), q, turn)
-          DocTools.scaleToMax(b, 240).asImageBitmap()
-        }
-        if (q == null && turn == 0) {
-          fixes.remove(page)
-          fixedThumbs.remove(page)
-        } else {
-          fixes[page] = PageFix(q, turn)
-          fixedThumbs[page] = thumb
-        }
-        assigned[page]?.let { dropCrop(it) }
-        results = null
-        cancelFix()
-      } catch (e: Throwable) {
-        error = messageOf(e, "The page could not be straightened.")
-      } finally {
-        busy = null
-      }
-    }
   }
 
   // ---- making every item
@@ -424,7 +338,11 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
         val kept = its.map { DocTools.keepPage(ctx, prepared(it, PdfTools.PAGE_LONG_SIDE)) }
         val name = nameFor(base, "pdf")
         val out = FileNames.outputFile(ctx, name)
-        val (size, _, fits) = DocTools.fitPdf(kept, maxBytes, out)
+        val (size, _, fits) = try {
+          DocTools.fitPdf(kept, maxBytes, out)
+        } finally {
+          kept.forEach { it.delete() } // (in the PDF now)
+        }
         SplitItemResult(item, listOf(ReadyFile(out, name, "application/pdf")), size, fits, false, null)
       }
 
@@ -433,7 +351,11 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
         val h = item.heightPx ?: 300
         val notes = mutableListOf<String>()
         more?.let { notes.add(it) }
-        val piece = if (cut != null) DocTools.scaleToMax(cutOut(preparedForCut(its[0]), cut), 2400) else prepared(its[0], 2400)
+        val piece = if (cut != null) {
+          DocTools.scaleToMax(cutOut(preparedForCut(its[0], faceSafe = true), cut), 2400)
+        } else {
+          prepared(its[0], 2400, faceSafe = true)
+        }
         val bg = (item.background ?: PhotoBackground.WHITE).argb
         // cut by hand: that part is the photo; else the face is found on the page
         val faces = if (cut == null) DocPhoto.findFaces(piece, notes) ?: emptyList() else emptyList()
@@ -515,13 +437,13 @@ fun SplitTool(
   outerBusy: Boolean = false,
   onNewPreset: () -> Unit = {},
   onStartAgain: () -> Unit = {},
+  onEdit: (Int) -> Unit = {},
 ) {
   // nothing is started while pages are still being opened or made
   val idle = split.busy == null && !outerBusy
   val presets by LocalContext.current.docReady.presets.presets.collectAsState()
   val cropping = split.cropping
   val cropImage = split.cropImage
-  val fixImage = split.fixImage
   if (cropping != null && cropImage != null) {
     val item = split.preset?.items?.getOrNull(cropping)
     Text(
@@ -537,35 +459,6 @@ fun SplitTool(
       Button(onClick = { split.applyCrop() }, enabled = idle) { Text("Use this part") }
       OutlinedButton(onClick = { split.cancelCrop() }) { Text("Cancel") }
     }
-    return
-  }
-  if (split.fixing != null && fixImage != null) {
-    Text(
-      "Drag each corner onto a corner of the paper. The page is straightened to them.",
-      style = MaterialTheme.typography.bodyMedium,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-      modifier = Modifier.padding(top = 12.dp),
-    )
-    VSpace(8)
-    QuadBox(fixImage, split.fixQuad, { split.fixQuad = it })
-    if (split.fixTurn != 0) Text("Turned ${split.fixTurn}° to the right", style = MaterialTheme.typography.bodySmall)
-    VSpace(8)
-    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-      OutlinedButton(onClick = { split.turnFix() }) {
-        Icon(AppIcons.Rotate, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(6.dp))
-        Text("Turn")
-      }
-      OutlinedButton(onClick = { split.findEdges() }) { Text("Find edges") }
-      OutlinedButton(onClick = { split.fixQuad = fullQuad() }) { Text("Whole page") }
-    }
-    VSpace(8)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-      Button(onClick = { split.applyFix() }, enabled = idle) { Text("Done") }
-      OutlinedButton(onClick = { split.cancelFix() }) { Text("Cancel") }
-    }
-    if (split.busy != null) BusyRow(split.busy ?: "")
-    ErrorText(split.error)
     return
   }
 
@@ -601,6 +494,11 @@ fun SplitTool(
   }
 
   SectionLabel("1 · Choose the form's preset")
+  if (presets.isEmpty()) {
+    NoPresetsCard(onNewPreset)
+    SplitPages(split, pages, null, onEdit, idle)
+    return
+  }
   Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
     for (p in presets) FilterChip(selected = split.preset?.id == p.id, onClick = { split.choosePreset(p) }, label = { Text(p.name) })
   }
@@ -616,7 +514,7 @@ fun SplitTool(
   val preset = split.preset
   if (preset == null) {
     SplitHint("Choose a preset above, then give the pages below to its items.")
-    SplitPages(split, pages, null)
+    SplitPages(split, pages, null, onEdit, idle)
     return
   }
 
@@ -637,14 +535,13 @@ fun SplitTool(
       Text("Give ${split.selected.size} to ${preset.items.getOrNull(split.target)?.title ?: ""}")
     }
     OutlinedButton(onClick = { split.unassignSelected() }, enabled = idle && split.selected.isNotEmpty()) { Text("Not used") }
-    if (split.selected.size == 1) OutlinedButton(onClick = { split.startFix(split.selected[0]) }, enabled = idle) { Text("Fix corners") }
     TextButton(onClick = { if (split.selected.isEmpty()) split.selectAll(pages) else split.selected.clear() }) {
       Text(if (split.selected.isEmpty()) "Select all" else "Clear")
     }
   }
 
   if (split.selected.isEmpty()) SplitHint("Tap pages below to select them.")
-  SplitPages(split, pages, preset)
+  SplitPages(split, pages, preset, onEdit, idle)
 
   // photos and signatures are often a small part of a scanned page: cut them out
   val cutItems = preset.items.withIndex().filter { (i, it) -> it.kind != ItemKind.DOCUMENT && split.pagesOf(i, pages).isNotEmpty() }
@@ -723,8 +620,11 @@ private fun SplitHint(text: String) {
 /** Every page as a tile: tap to select; under it, the item it was given to */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SplitPages(split: SplitState, pages: List<PdfPage>, preset: Preset?) {
-  SectionLabel("Pages (${pages.size}) · tap to select")
+private fun SplitPages(split: SplitState, pages: List<PdfPage>, preset: Preset?, onEdit: (Int) -> Unit, idle: Boolean) {
+  Row(verticalAlignment = Alignment.CenterVertically) {
+    SectionLabel("Pages (${pages.size}) · tap to select", Modifier.weight(1f))
+    TextButton(onClick = { onEdit(0) }, enabled = idle) { Text("Edit all pages") }
+  }
   FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     pages.forEachIndexed { n, page ->
       val isSelected = page in split.selected
@@ -739,11 +639,17 @@ private fun SplitPages(split: SplitState, pages: List<PdfPage>, preset: Preset?)
           ),
           modifier = Modifier.size(width = 84.dp, height = 112.dp),
         ) {
-          (split.fixedThumbs[page] ?: page.thumb)?.let {
+          (split.thumbs[page] ?: page.thumb)?.let {
             Image(it, contentDescription = "Page ${n + 1}", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(2.dp))
           }
         }
-        Text("${n + 1}", style = MaterialTheme.typography.labelSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Text("${n + 1}", style = MaterialTheme.typography.labelSmall)
+          // the pencil: the page editor, before or after giving the page
+          IconButton(onClick = { onEdit(n) }, enabled = idle, modifier = Modifier.size(32.dp)) {
+            Icon(AppIcons.Edit, contentDescription = "Edit page ${n + 1}", modifier = Modifier.size(16.dp))
+          }
+        }
         Text(
           item?.title ?: "not used",
           style = MaterialTheme.typography.labelSmall,

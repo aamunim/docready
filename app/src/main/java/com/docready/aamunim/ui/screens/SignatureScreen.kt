@@ -15,6 +15,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -63,6 +64,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.docready.aamunim.data.FileNames
 import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.data.model.OutputFormat
+import com.docready.aamunim.data.model.PageRecipe
+import com.docready.aamunim.imaging.PageRenderer
+import com.docready.aamunim.ui.editor.EditorMode
+import com.docready.aamunim.ui.editor.EditorPage
+import com.docready.aamunim.ui.editor.PageEditorScreen
+import com.docready.aamunim.ui.editor.PageEditorState
+import com.docready.aamunim.data.model.PresetItem
 import com.docready.aamunim.docReady
 import com.docready.aamunim.imaging.DocTools
 import com.docready.aamunim.imaging.PdfTools
@@ -122,6 +130,14 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
       maxKbState = v
       edited()
     }
+  /** The sizes of a preset's signature item, picked on this screen */
+  fun applyItem(it: PresetItem) {
+    it.widthPx?.let { w -> widthText = w.toString() }
+    it.heightPx?.let { h -> heightText = h.toString() }
+    maxKbText = it.maxKb?.toString() ?: ""
+    transparent = it.format == OutputFormat.PNG
+  }
+
   var transparent: Boolean
     get() = transparentState
     set(v) {
@@ -152,11 +168,32 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
   private val lock = Mutex()
   private var src: Bitmap? = null
 
-  fun setSource(uri: Uri) = load { FileNames.copyIn(ctx, uri, "img") }
+  fun setSource(uri: Uri) = load({ FileNames.copyIn(ctx, uri, "img") }, PageRecipe.Plain)
 
-  fun setSourceFile(file: File) = load { file }
+  fun setSourceFile(file: File) = load({ file }, PageRecipe.Plain)
 
-  private fun load(fileOf: () -> File) {
+  // ---- the signature photo's own edits (crop, rotate, erase, contrast) in the shared editor
+  private var sourceFile: File? = null
+  private var sourceRecipe = PageRecipe.Plain
+  var editor by mutableStateOf<PageEditorState?>(null)
+    private set
+
+  fun openEditor() {
+    val f = sourceFile ?: return
+    editor = PageEditorState(
+      viewModelScope,
+      listOf(EditorPage("Signature photo", sourceRecipe) { side -> DocTools.load(ctx, Uri.fromFile(f), side) }),
+      0,
+      EditorMode.SIGNATURE,
+      onDone = { done ->
+        editor = null
+        if (done[0] != sourceRecipe) load({ f }, done[0])
+      },
+      onClose = { editor = null },
+    )
+  }
+
+  private fun load(fileOf: () -> File, recipe: PageRecipe) {
     viewModelScope.launch {
       busy = "Opening the photo…"
       error = null
@@ -164,7 +201,10 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
       try {
         val shown = lock.withLock {
           withContext(Dispatchers.Default) {
-            val b = DocTools.load(ctx, Uri.fromFile(fileOf()), 2000)
+            val f = fileOf()
+            val b = DocTools.mutable(PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), 2000), recipe))
+            sourceFile = f
+            sourceRecipe = recipe
             src = b
             showable(b)
           }
@@ -186,27 +226,10 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
   }
 
   /** A quarter turn clockwise (a photo taken sideways) */
+  /** A quarter turn clockwise (a photo taken sideways): part of the photo's edits */
   fun rotate() {
-    viewModelScope.launch {
-      try {
-        val shown = lock.withLock {
-          withContext(Dispatchers.Default) {
-            val b = src ?: return@withContext null
-            val m = Matrix().apply { postRotate(90f) }
-            val turned = Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
-            src = turned
-            showable(turned)
-          }
-        }
-        if (shown != null) {
-          picture = shown
-          box = NormBox.Default
-          result = null
-        }
-      } catch (e: Throwable) {
-        error = messageOf(e, "The photo could not be turned.")
-      }
-    }
+    val f = sourceFile ?: return
+    load({ f }, sourceRecipe.copy(turn = (sourceRecipe.turn + 90) % 360))
   }
 
   fun process() {
@@ -348,6 +371,12 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
         }
         if (count == 0) throw IllegalStateException("This PDF has no pages.")
         if (count > PdfTools.PAGE_LIMIT) error = "This PDF has $count pages: only the first ${PdfTools.PAGE_LIMIT} can be used."
+        // the form before: its page file and edits must not carry over to this one
+        formRequest++
+        formPageFile?.let { old -> if (formIsPdf && old.exists()) old.delete() }
+        formPageFile = null
+        formIndex = 0
+        formRecipe = PageRecipe.Plain
         formSource = file
         formIsPdf = pdf
         formCount = minOf(count, PdfTools.PAGE_LIMIT)
@@ -368,16 +397,38 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
     viewModelScope.launch { loadFormPage(index) }
   }
 
-  private suspend fun loadFormPage(index: Int) {
+  /** The form page's own edits (the shared page editor); a new page starts as it is */
+  private var formRecipe = PageRecipe.Plain
+
+  fun openFormEditor() {
+    val f = formPageFile ?: return
+    editor = PageEditorState(
+      viewModelScope,
+      listOf(EditorPage("Form page ${formIndex + 1}", formRecipe) { side -> DocTools.load(ctx, Uri.fromFile(f), side) }),
+      0,
+      EditorMode.DOCUMENT,
+      onDone = { done ->
+        editor = null
+        if (done[0] != formRecipe) viewModelScope.launch { loadFormPage(formIndex, done[0]) }
+      },
+      onClose = { editor = null },
+    )
+  }
+
+  private suspend fun loadFormPage(index: Int, recipe: PageRecipe = PageRecipe.Plain) {
     val src = formSource ?: return
     if (index !in 0 until formCount) return
     val pdf = formIsPdf
+    // the same page again (its edits changed): its page file is used as it is
+    val reuse = formPageFile?.takeIf { index == formIndex && it.exists() }
     val my = ++formRequest
     busy = "Opening page ${index + 1}…"
     try {
       val (file, b) = withContext(Dispatchers.Default) {
         // a PDF page is made only when it is shown
-        val f = if (pdf) {
+        val f = if (reuse != null) {
+          reuse
+        } else if (pdf) {
           val page = PdfTools.renderPage(src, index, 2000)
           try {
             DocTools.save(ctx, DocTools.jpeg(page, 92), "jpg")
@@ -387,7 +438,7 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
         } else {
           src
         }
-        f to DocTools.load(ctx, Uri.fromFile(f), 1400)
+        f to PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), 1400), recipe)
       }
       if (my != formRequest || formSource !== src) {
         if (file !== src) file.delete() // a newer page was asked for meanwhile
@@ -396,6 +447,7 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
       // the page shown before is no longer needed (one page file at a time)
       formPageFile?.let { old -> if (old != src && old != file) old.delete() }
       formPageFile = file
+      formRecipe = recipe
       formW = b.width
       formH = b.height
       formIndex = index
@@ -435,7 +487,10 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
       error = null
       try {
         placeResult = withContext(Dispatchers.Default) {
-          val page = DocTools.mutable(DocTools.load(ctx, Uri.fromFile(f), 2400))
+          val edits = formRecipe
+          val page = DocTools.mutable(
+            DocTools.scaleToMax(PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), if (edits.quad != null) 2600 else 2400), edits), 2400),
+          )
           Canvas(page).drawBitmap(
             signature,
             null,
@@ -447,10 +502,15 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
             val kept = DocTools.keepPage(ctx, page)
             val name = "signed_page.pdf"
             val out = FileNames.outputFile(ctx, name)
-            val (size, _, fits) = DocTools.fitPdf(listOf(kept), maxBytes, out)
+            val previewImg = DocTools.thumbnail(kept, 600)?.asImageBitmap()
+            val (size, _, fits) = try {
+              DocTools.fitPdf(listOf(kept), maxBytes, out)
+            } finally {
+              kept.delete() // (in the PDF now)
+            }
             FilesResult(
               listOf(ReadyFile(out, name, "application/pdf")),
-              DocTools.thumbnail(kept, 600)?.asImageBitmap(),
+              previewImg,
               size, size, kb, fits, 1, OutputFormat.PDF,
             )
           } else {
@@ -475,9 +535,14 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
 }
 
 @Composable
-fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
+fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}) {
   val app = LocalContext.current.applicationContext as Application
   val vm: SignatureViewModel = viewModel { SignatureViewModel(app, presetId, itemIndex) }
+  // the shared page editor takes the whole screen while it is open
+  vm.editor?.let {
+    PageEditorScreen(it)
+    return
+  }
   val source = rememberImageSource { vm.setSource(it) }
   var saving by rememberSaveable { mutableStateOf(false) }
   var savingPage by rememberSaveable { mutableStateOf(false) }
@@ -524,6 +589,7 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
         )
         VSpace(16)
         ImageSourceButtons(source)
+        if (vm.preset == null) PresetItemShortcut(ItemKind.SIGNATURE, { _, item -> vm.applyItem(item) }, onNewPreset)
       } else {
         Text(
           "Drag the corners so the box fits closely around the signature.",
@@ -533,7 +599,8 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
         VSpace(10)
         CropBox(picture, vm.box, { vm.box = it })
         VSpace(8)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          OutlinedButton(onClick = { vm.openEditor() }, enabled = vm.busy == null) { Text("Edit photo") }
           OutlinedButton(onClick = { vm.rotate() }, enabled = vm.busy == null) {
             Icon(AppIcons.Rotate, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
@@ -551,6 +618,7 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit) {
           onSelect = { vm.transparent = it },
         )
 
+        if (vm.preset == null) PresetItemShortcut(ItemKind.SIGNATURE, { _, item -> vm.applyItem(item) }, onNewPreset)
         SectionLabel("Size")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           NumberField("Width px", vm.widthText, { vm.widthText = it }, Modifier.weight(1f))
@@ -639,9 +707,10 @@ private fun PlaceOnPage(vm: SignatureViewModel, choosePage: () -> Unit, savePage
     vm.placeResult = null
   }, Modifier.fillMaxWidth())
   VSpace(8)
-  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+  Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
     Button(onClick = { vm.makePage() }, enabled = vm.busy == null) { Text("Make the page") }
     OutlinedButton(onClick = choosePage, enabled = vm.busy == null) { Text("Other page") }
+    OutlinedButton(onClick = { vm.openFormEditor() }, enabled = vm.busy == null) { Text("Edit page") }
     TextButton(onClick = { vm.closeForm() }) { Text("Close") }
   }
   vm.placeResult?.let { r ->

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.core.content.IntentCompat
 import com.docready.aamunim.data.FileNames
+import com.docready.aamunim.data.PresetCodec
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -13,6 +14,9 @@ import java.io.File
 /** A file shared to the app, already copied into it */
 data class IncomingFile(val file: File, val name: String, val mime: String) {
   val isPdf: Boolean get() = mime == "application/pdf"
+
+  /** A DocReady preset someone sent (".docready.json"): imported, never "made" */
+  val isPreset: Boolean get() = mime == "application/json"
 }
 
 enum class IntakeTarget { PHOTO, SIGNATURE, PDF_TOOLS, SPLIT }
@@ -89,15 +93,27 @@ object Intake {
         val mime = when {
           told.startsWith("image/") || told == "application/pdf" -> told
           ext == "pdf" -> "application/pdf"
+          // a preset file (checked strictly when it is imported)
+          told == "application/json" || ext == "json" -> "application/json"
           ext in setOf("jpg", "jpeg", "png", "webp", "heic", "heif") -> "image/${if (ext == "jpg") "jpeg" else ext}"
           told.isEmpty() -> intent.type ?: ""
           else -> told
         }
-        if (!(mime.startsWith("image/") || mime == "application/pdf")) {
+        if (!(mime.startsWith("image/") || mime == "application/pdf" || mime == "application/json")) {
           skipped++
           continue
         }
-        val file = FileNames.copyIn(context, u, if (mime == "application/pdf") "pdf" else "img")
+        val file = FileNames.copyIn(
+          context,
+          u,
+          when (mime) {
+            "application/pdf" -> "pdf"
+            "application/json" -> "json"
+            else -> "img"
+          },
+          // a preset file is tiny: a big "JSON" is refused while it is copied
+          maxBytes = if (mime == "application/json") PresetCodec.MAX_BYTES.toLong() else null,
+        )
         out.add(IncomingFile(file, name, mime))
       } catch (_: Exception) {
         skipped++ // a file the sender no longer lets us read
