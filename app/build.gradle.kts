@@ -38,7 +38,7 @@ android {
                 storePassword = providers.environmentVariable("SIGNING_STORE_PASSWORD").get()
             }
         } else {
-            logger.warn("Warning: no signing config found. The release build will be unsigned.")
+            logger.warn("Warning: no release key: the release build is signed with the debug key (installable for testing, not for Google Play).")
         }
     }
 
@@ -53,9 +53,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            if (hasSigningVars()) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            // without the release key (forks, secrets not added yet) the debug key signs it:
+            // Android refuses to install an unsigned APK
+            signingConfig = signingConfigs.getByName(if (hasSigningVars()) "release" else "debug")
         }
     }
 

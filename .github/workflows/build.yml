@@ -67,7 +67,7 @@ jobs:
             echo "::error::No signing key: Google Play needs a signed bundle (secret ITTC_KEYSTORE_BASE64)."
             exit 1
           else
-            echo "::warning::No signing key (secrets not available): the build will be unsigned."
+            echo "::warning::No signing key (secrets not available): the APK is signed with a debug key (installable for testing, not for Google Play)."
           fi
 
       - name: Build the APK and the Play bundle
