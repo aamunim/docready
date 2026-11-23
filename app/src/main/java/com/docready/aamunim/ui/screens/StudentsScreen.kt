@@ -91,8 +91,8 @@ import java.io.File
 /** A student's progress on their preset: "3 of 5 ready" (required items) */
 private fun progress(s: Student, preset: Preset?): String? {
   val p = preset ?: return null
-  val required = p.items.withIndex().filter { it.value.required }
-  val done = required.count { (i, item) -> s.stateOf(i, item) == ItemState.DONE }
+  val required = p.items.filter { it.required }
+  val done = required.count { s.stateOf(it) == ItemState.DONE }
   return "$done of ${required.size} ready"
 }
 
@@ -341,7 +341,14 @@ fun StudentScreen(
         TextButton(onClick = {
           confirmDelete = false
           scope.launch {
-            app.students.delete(s.id, alsoFiles)
+            val left = app.students.delete(s.id, alsoFiles)
+            if (left > 0) {
+              android.widget.Toast.makeText(
+                context,
+                "$left file${if (left == 1) "" else "s"} in Downloads couldn't be removed; delete ${if (left == 1) "it" else "them"} in the Files app.",
+                android.widget.Toast.LENGTH_LONG,
+              ).show()
+            }
             onBack()
           }
         }) { Text("Delete") }
@@ -354,8 +361,8 @@ fun StudentScreen(
 @Composable
 private fun ChecklistRow(s: Student, index: Int, item: com.docready.aamunim.data.model.PresetItem, onMake: (String) -> Unit) {
   val extra = DocReadyColors.extra
-  val state = s.stateOf(index, item)
-  val f = s.fileFor(index)
+  val state = s.stateOf(item)
+  val f = s.fileFor(item)
   val (color, word) = when (state) {
     ItemState.DONE -> extra.success to "Done"
     ItemState.TOO_BIG -> MaterialTheme.colorScheme.error to "Too big"
@@ -441,8 +448,13 @@ fun AddToStudentButton(studentId: String, files: List<ReadyFile>?, preset: Prese
       val f = files ?: return@Button
       busy = true
       scope.launch {
-        val r = app.students.attach(studentId, f, preset)
+        val r = try {
+          app.students.attach(studentId, f, preset)
+        } catch (e: Throwable) {
+          null.also { Toast.makeText(context, "Could not add the files: ${e.message ?: "the file is no longer there"}. Make it again.", Toast.LENGTH_LONG).show() }
+        }
         busy = false
+        if (r == null) return@launch
         when (r) {
           is SaveOutcome.Failed -> Toast.makeText(context, "Kept for ${student?.name ?: "the student"}; Downloads: ${r.message}", Toast.LENGTH_LONG).show()
           else -> Toast.makeText(context, "Added to ${student?.name ?: "the student"}", Toast.LENGTH_SHORT).show()

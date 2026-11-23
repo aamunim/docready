@@ -367,6 +367,8 @@ fun PresetDetailScreen(
 
 /** One item of a preset while it is being edited (text fields keep what is typed) */
 private class EditItem(item: PresetItem) {
+  /** The item's lasting id (a student's files point to it); "" for a new item */
+  var id = item.id
   var kind by mutableStateOf(item.kind)
   var width by mutableStateOf(item.widthPx?.toString() ?: "")
   var height by mutableStateOf(item.heightPx?.toString() ?: "")
@@ -379,7 +381,7 @@ private class EditItem(item: PresetItem) {
 
   /** As text, to be kept in the saved screen state */
   fun toSaved(): ArrayList<String> =
-    arrayListOf(kind.name, width, height, maxKb, format.name, background.name, name, required.toString(), pagesHint)
+    arrayListOf(kind.name, width, height, maxKb, format.name, background.name, name, required.toString(), pagesHint, id)
 
   companion object {
     fun fromSaved(v: List<String>): EditItem = EditItem(PresetItem(ItemKind.valueOf(v[0]))).apply {
@@ -391,6 +393,7 @@ private class EditItem(item: PresetItem) {
       name = v.getOrNull(6) ?: ""
       required = v.getOrNull(7)?.toBooleanStrictOrNull() ?: true
       pagesHint = v.getOrNull(8) ?: ""
+      id = v.getOrNull(9) ?: ""
     }
 
     fun newOf(kind: ItemKind): EditItem = EditItem(
@@ -459,6 +462,7 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
         name = e.name.trim().take(60).ifEmpty { null },
         required = e.required,
         pagesHint = if (e.kind == ItemKind.DOCUMENT) e.pagesHint.trim().take(20).ifEmpty { null } else null,
+        id = e.id,
       )
     }
     return Preset(existing?.id ?: PresetRepository.newId(), name.trim().take(60), built, namePattern = namePattern.trim().take(80).ifEmpty { null })

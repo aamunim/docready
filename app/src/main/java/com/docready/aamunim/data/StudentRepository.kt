@@ -22,7 +22,12 @@ import java.util.UUID
  * Students and their files: the list as JSON (students.json); each student's files copied into
  * the app's own storage (files/students/<id>/) and saved to Downloads/DocReady/<student name>/.
  */
-class StudentRepository(private val context: Context, private val phone: SaveTarget, private val settings: SettingsRepository) {
+class StudentRepository(
+  private val context: Context,
+  private val phone: SaveTarget,
+  private val settings: SettingsRepository,
+  private val presets: PresetRepository,
+) {
   private val file = File(context.filesDir, "students.json")
   private val lock = Any()
   private val _students = MutableStateFlow(read())
@@ -39,21 +44,38 @@ class StudentRepository(private val context: Context, private val phone: SaveTar
     return stored
   }
 
-  /** The student forgotten, their app copies removed; [alsoDownloads]: their files in Downloads too */
-  suspend fun delete(id: String, alsoDownloads: Boolean) = withContext(Dispatchers.IO) {
-    val s = get(id) ?: return@withContext
+  /**
+   * The student forgotten, their app copies removed; [alsoDownloads]: their files in Downloads too.
+   * Returns how many Downloads files could not be removed (still there: e.g. no longer the app's
+   * own after a reinstall), to be deleted in the Files app.
+   */
+  suspend fun delete(id: String, alsoDownloads: Boolean): Int = withContext(Dispatchers.IO) {
+    val s = get(id) ?: return@withContext 0
+    var left = 0
     if (alsoDownloads) {
       for (f in s.files) {
-        val uri = f.downloadsUri ?: continue
-        try {
-          context.contentResolver.delete(Uri.parse(uri), null, null)
+        val uri = Uri.parse(f.downloadsUri ?: continue)
+        val removed = try {
+          context.contentResolver.delete(uri, null, null) > 0
         } catch (_: Exception) {
-          // (already gone, or no longer ours)
+          false
         }
+        // (a file already gone by other means is not a failure)
+        if (!removed && stillThere(uri)) left++
       }
     }
     dirOf(id).deleteRecursively()
     synchronized(lock) { write(_students.value.filter { it.id != id }) }
+    left
+  }
+
+  private fun stillThere(uri: Uri): Boolean = try {
+    context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { it.moveToFirst() } ?: false
+  } catch (_: SecurityException) {
+    // (not readable by the app any more, but it may well be there)
+    true
+  } catch (_: Exception) {
+    false
   }
 
   /** One file removed from the student (its app copy; the Downloads copy stays) */
@@ -70,6 +92,9 @@ class StudentRepository(private val context: Context, private val phone: SaveTar
    */
   suspend fun attach(id: String, files: List<ReadyFile>, preset: Preset?): SaveOutcome = withContext(Dispatchers.IO) {
     val s = get(id) ?: return@withContext SaveOutcome.Failed("This student is no longer here.")
+    // a file counts for an item only when made for the student's own preset (a split made with
+    // another preset still adds its files, without ticking anything)
+    val linkPreset = preset?.takeIf { s.presetId == null || s.presetId == it.id }
     val naming = NameContext(preset = preset?.name, presetPattern = preset?.namePattern, student = s.name, roll = s.roll)
     val dir = dirOf(id).apply { mkdirs() }
     val used = (dir.list()?.toSet() ?: emptySet()).toMutableSet()
@@ -93,8 +118,8 @@ class StudentRepository(private val context: Context, private val phone: SaveTar
         path = f.file.path,
         mime = f.mime,
         bytes = f.file.length(),
-        itemIndex = f.itemIndex,
-        itemTitle = f.itemIndex?.let { preset?.items?.getOrNull(it)?.title },
+        itemId = f.itemIndex?.let { linkPreset?.items?.getOrNull(it)?.id?.ifEmpty { null } },
+        itemTitle = f.itemIndex?.let { linkPreset?.items?.getOrNull(it)?.title },
         downloadsUri = links.getOrNull(i)?.uri,
         savedAt = now + i,
       )
@@ -108,12 +133,14 @@ class StudentRepository(private val context: Context, private val phone: SaveTar
    * The student's files as ready files in the app's share folder (copies: the student's own
    * storage is never handed to other apps, and the save sheet may rename what it gets). Blocking.
    */
-  fun exportCopies(s: Student): List<ReadyFile> =
-    s.files.filter { File(it.path).exists() }.map { f ->
+  fun exportCopies(s: Student): List<ReadyFile> {
+    val items = presets.get(s.presetId)?.items ?: emptyList()
+    return s.files.filter { File(it.path).exists() }.map { f ->
       val out = FileNames.outputFile(context, f.name)
       File(f.path).copyTo(out, overwrite = true)
-      ReadyFile(out, f.name, f.mime, itemIndex = f.itemIndex)
+      ReadyFile(out, f.name, f.mime, itemIndex = f.itemId?.let { id -> items.indexOfFirst { it.id == id }.takeIf { it >= 0 } })
     }
+  }
 
   private fun dirOf(id: String) = File(File(context.filesDir, "students"), id)
 
@@ -124,7 +151,24 @@ class StudentRepository(private val context: Context, private val phone: SaveTar
   }
 
   private fun read(): List<Student> = try {
-    if (file.exists()) AppJson.decodeFromString(ListSerializer(Student.serializer()), file.readText()).sortedByDescending { it.updatedAt } else emptyList()
+    if (file.exists()) {
+      val loaded = AppJson.decodeFromString(ListSerializer(Student.serializer()), file.readText()).sortedByDescending { it.updatedAt }
+      // files saved by older versions point to an item by its place: given the item's id once
+      val list = loaded.map { s ->
+        val items = presets.get(s.presetId)?.items
+        if (s.files.none { it.itemId == null && it.itemIndex != null }) {
+          s
+        } else {
+          s.copy(files = s.files.map { f ->
+            if (f.itemId != null || f.itemIndex == null) f else f.copy(itemId = items?.getOrNull(f.itemIndex)?.id?.ifEmpty { null }, itemIndex = null)
+          })
+        }
+      }
+      if (list != loaded) file.writeTextAtomic(AppJson.encodeToString(ListSerializer(Student.serializer()), list))
+      list
+    } else {
+      emptyList()
+    }
   } catch (_: Exception) {
     emptyList()
   }

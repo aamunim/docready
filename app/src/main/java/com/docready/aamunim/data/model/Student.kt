@@ -10,8 +10,10 @@ data class StudentFile(
   val path: String,
   val mime: String,
   val bytes: Long,
-  /** Which item of the student's preset it is (null: another file) */
+  /** (older versions: the item's place in the preset; only read to find [itemId] once) */
   val itemIndex: Int? = null,
+  /** Which item of the student's preset it is ([PresetItem.id]; null: another file) */
+  val itemId: String? = null,
   val itemTitle: String? = null,
   /** Its copy in Downloads/DocReady/<student> (a content link the app may delete) */
   val downloadsUri: String? = null,
@@ -35,11 +37,12 @@ data class Student(
 /** How one preset item stands for a student */
 enum class ItemState { DONE, TOO_BIG, MISSING }
 
-/** The newest file for item [index], or null */
-fun Student.fileFor(index: Int): StudentFile? = files.filter { it.itemIndex == index }.maxByOrNull { it.savedAt }
+/** The newest file for [item] (matched by the item's id, so reordering items never moves ticks), or null */
+fun Student.fileFor(item: PresetItem): StudentFile? =
+  if (item.id.isEmpty()) null else files.filter { it.itemId == item.id }.maxByOrNull { it.savedAt }
 
-fun Student.stateOf(index: Int, item: PresetItem): ItemState {
-  val f = fileFor(index) ?: return ItemState.MISSING
+fun Student.stateOf(item: PresetItem): ItemState {
+  val f = fileFor(item) ?: return ItemState.MISSING
   val limit = item.maxKb?.let { it * 1024L }
   return if (limit != null && f.bytes > limit) ItemState.TOO_BIG else ItemState.DONE
 }

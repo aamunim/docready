@@ -14,7 +14,7 @@ class DocReadyApplication : Application() {
   val settings: com.docready.aamunim.data.SettingsRepository by lazy { com.docready.aamunim.data.SettingsRepository(this) }
   val drafts: com.docready.aamunim.data.DraftRepository by lazy { com.docready.aamunim.data.DraftRepository(this) }
   val students: com.docready.aamunim.data.StudentRepository by lazy {
-    com.docready.aamunim.data.StudentRepository(this, saveTargets.phone, settings)
+    com.docready.aamunim.data.StudentRepository(this, saveTargets.phone, settings, presets)
   }
 }
 

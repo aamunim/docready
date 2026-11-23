@@ -5,6 +5,7 @@ import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.data.model.OutputFormat
 import com.docready.aamunim.data.model.PhotoBackground
 import com.docready.aamunim.data.model.Preset
+import com.docready.aamunim.data.model.withItemIds
 import com.docready.aamunim.data.model.PresetItem
 import com.docready.aamunim.data.model.safeFileName
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,7 +31,7 @@ class PresetRepository(context: Context) {
   fun get(id: String?): Preset? = if (id == null) null else _presets.value.firstOrNull { it.id == id }
 
   fun save(preset: Preset): Preset {
-    val stored = preset.copy(builtIn = false, updatedAt = System.currentTimeMillis())
+    val stored = preset.withItemIds(::newId).copy(builtIn = false, updatedAt = System.currentTimeMillis())
     synchronized(lock) {
       write(_presets.value.filter { it.id != stored.id } + stored)
     }
@@ -58,9 +59,13 @@ class PresetRepository(context: Context) {
 
   private fun read(): List<Preset> = try {
     if (file.exists()) {
-      AppJson.decodeFromString(ListSerializer(Preset.serializer()), file.readText())
-        .map { it.copy(builtIn = false) }
-        .sortedBy { it.name.lowercase() }
+      val loaded = AppJson.decodeFromString(ListSerializer(Preset.serializer()), file.readText())
+      // items saved by older versions get their ids now, kept from then on
+      val list = loaded.map { it.withItemIds(::newId).copy(builtIn = false) }.sortedBy { it.name.lowercase() }
+      if (list.zip(loaded.sortedBy { it.name.lowercase() }).any { (a, b) -> a.items != b.items }) {
+        file.writeTextAtomic(AppJson.encodeToString(ListSerializer(Preset.serializer()), list))
+      }
+      list
     } else {
       emptyList()
     }
@@ -148,6 +153,8 @@ object PresetCodec {
       name = item.name?.let { clean(it, 60) }?.ifEmpty { null },
       required = item.required,
       pagesHint = if (item.kind == ItemKind.DOCUMENT) item.pagesHint?.let { clean(it, 20) }?.ifEmpty { null } else null,
+      // (ids from the file are not trusted: an imported preset's items get their own)
+      id = PresetRepository.newId(),
     )
   }
 

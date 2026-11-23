@@ -73,7 +73,8 @@ object Naming {
       .replace("{preset}", ctx.preset.orEmpty())
       .replace("{date}", dateText)
       .replace("{seq}", seq.toString())
-    if (s.transliterate) out = Bangla.toLatin(out)
+    // English letters only: whatever the table left (joiners, a lone nukta, other scripts) goes
+    if (s.transliterate) out = Bangla.latinOnly(Bangla.toLatin(out))
     val sep = s.separator.ifEmpty { "_" }
     // only characters a file name can hold; spaces → the separator; no doubled / dangling separators
     out = out.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]+"), " ").trim()
@@ -83,7 +84,8 @@ object Naming {
       out = out.replace(Regex("($q){2,}"), sep).replace(Regex("^($q)+|($q)+$"), "")
     }
     out = out.trim('.', ' ').take(100)
-    return out.ifEmpty { item.ifEmpty { "file" } }
+    val fallback = if (s.transliterate) Bangla.latinOnly(Bangla.toLatin(item)).trim() else item
+    return out.ifEmpty { fallback.ifEmpty { "file" } }
   }
 }
 
@@ -114,9 +116,17 @@ object Bangla {
 
   private fun isBanglaLetter(c: Char?) = c != null && c in 'ঀ'..'৿' && c != '।' && !c.isDigit()
 
+  /** Only characters safe in any file name, in English letters: A-Z a-z 0-9 space . _ ( ) - */
+  fun latinOnly(text: String): String = text.replace(Regex("[^A-Za-z0-9 ._()-]"), "")
+
   fun toLatin(text: String): String {
     // (ড় ঢ় য় may come as a letter + nukta: the single letters, which Unicode never composes)
-    val s = text.replace("\u09A1\u09BC", "\u09DC").replace("\u09A2\u09BC", "\u09DD").replace("\u09AF\u09BC", "\u09DF")
+    // zero-width joiners (typed in some names) would hide a hasanta or a vowel sign: dropped first;
+    // a lone nukta and the au length mark (U+09D7) have no sound of their own
+    val s = text.replace("\u200C", "").replace("\u200D", "")
+      .replace("\u09A1\u09BC", "\u09DC").replace("\u09A2\u09BC", "\u09DD").replace("\u09AF\u09BC", "\u09DF")
+      .replace("\u09C7\u09BE", "\u09CB").replace("\u09C7\u09D7", "\u09CC")
+      .replace("\u09BC", "").replace("\u09D7", "")
     val out = StringBuilder()
     var i = 0
     var wordStart = true

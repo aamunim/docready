@@ -493,8 +493,8 @@ class PhotoViewModel(app: Application, private val presetId: String?, private va
     )
   }
 
-  private suspend fun restore(d: Draft) {
-    val p = d.pages.firstOrNull() ?: return
+  private suspend fun restore(d: Draft): Boolean {
+    val p = d.pages.firstOrNull() ?: return false
     val v = d.values
     v["width"]?.let { widthState = it }
     v["height"]?.let { heightState = it }
@@ -503,15 +503,26 @@ class PhotoViewModel(app: Application, private val presetId: String?, private va
     v["headSize"]?.toFloatOrNull()?.let { headSize = it }
     v["enhance"]?.toBooleanStrictOrNull()?.let { enhance = it }
     load({ File(p.file) }, p.recipe).join()
+    if (sourceFile?.path != p.file) {
+      // (load said why on screen)
+      error = (error ?: "The unfinished photo could not be opened.") + " The draft is kept as it was."
+      return false
+    }
     val box = v["box"]?.split(',')?.mapNotNull { it.toFloatOrNull() }?.takeIf { it.size == 4 }
-    if (box != null && hasSource) {
+    if (box != null) {
       manual = NormBox(box[0], box[1], box[2], box[3])
       process()
     }
+    return true
   }
 
   init {
     draft.begin(resume)
+  }
+
+  override fun onCleared() {
+    draft.flush()
+    super.onCleared()
   }
 }
 

@@ -116,8 +116,10 @@ fun SaveSheet(
       if (f.file.name == name) {
         f.copy(name = name)
       } else {
-        val target = java.io.File(f.file.parentFile, name)
-        if (target.exists() || !f.file.renameTo(target)) f.file.copyTo(target, overwrite = true)
+        // a copy under the new name in its own folder: the tool's file is never moved (it is
+        // still shown, and may be shared, saved or added to a student again)
+        val target = FileNames.outputFile(context, name)
+        f.file.copyTo(target, overwrite = true)
         f.copy(file = target, name = name)
       }
     }

@@ -34,7 +34,16 @@ data class PresetItem(
   val required: Boolean = true,
   /** A document's pages, as the form says ("1-2"); a hint only */
   val pagesHint: String? = null,
+  /**
+   * Stays the same when items are reordered, renamed or others deleted (a student's files are
+   * matched to items by it). "" in files from older versions: given one when loaded / saved.
+   */
+  val id: String = "",
 )
+
+/** Every item with an id (new or older items get a fresh one) */
+fun Preset.withItemIds(newId: () -> String): Preset =
+  if (items.all { it.id.isNotEmpty() }) this else copy(items = items.map { if (it.id.isEmpty()) it.copy(id = newId()) else it })
 
 @Serializable
 data class Preset(

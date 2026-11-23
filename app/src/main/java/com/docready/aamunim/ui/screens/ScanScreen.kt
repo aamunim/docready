@@ -370,7 +370,7 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
     )
   }
 
-  private suspend fun restore(d: Draft) {
+  private suspend fun restore(d: Draft): Boolean {
     d.values["format"]?.let { f -> OutputFormat.entries.firstOrNull { it.name == f }?.let { format = it } }
     d.values["maxKb"]?.let { maxKbText = it }
     busy = "Opening your pages…"
@@ -384,8 +384,10 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
       // (before any pages added meanwhile)
       pages.addAll(0, back)
       result = null
+      return true
     } catch (e: Throwable) {
-      error = messageOf(e, "The unfinished pages could not be opened.")
+      error = messageOf(e, "The unfinished pages could not be opened.") + " The draft is kept as it was."
+      return false
     } finally {
       busy = null
     }
@@ -393,6 +395,11 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
 
   init {
     draft.begin(resume)
+  }
+
+  override fun onCleared() {
+    draft.flush()
+    super.onCleared()
   }
 }
 

@@ -9,6 +9,7 @@ import com.docready.aamunim.data.model.PageRecipe
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -107,8 +108,18 @@ class DraftRepository(private val context: Context) {
     if (pages.isEmpty()) null else d.copy(pages = pages)
   }
 
-  /** Kept (sources copied in once, files no longer used removed) */
-  suspend fun save(d: Draft) = io {
+  /**
+   * Work outliving the screen that started it (a draft written as the tool closes, a draft ended
+   * just before going back): never cancelled with the screen.
+   */
+  val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+  /**
+   * Kept (sources copied in once, files no longer used removed). [still] is asked once the
+   * draft's turn has come (inside the lock): false = no longer wanted (the work was saved meanwhile).
+   */
+  suspend fun save(d: Draft, still: () -> Boolean = { true }) = io {
+    if (!still()) return@io
     val dir = dirOf(d.key).apply { mkdirs() }
     val pages = d.pages.map { p ->
       val src = File(p.file)
@@ -130,7 +141,8 @@ class DraftRepository(private val context: Context) {
    * The work was saved: no longer offered. Its files stay until the app starts again (the open
    * tool may still be showing them).
    */
-  suspend fun clear(key: String) = io {
+  suspend fun clear(key: String, still: () -> Boolean = { true }) = io {
+    if (!still()) return@io
     File(dirOf(key), JSON).delete()
     publish()
   }
@@ -187,7 +199,8 @@ class DraftRepository(private val context: Context) {
 
 /**
  * Autosave for a tool: once started, the tool's state ([snapshot], null = nothing to keep) is
- * written a moment after it stops changing. [done] after a save: the draft is no longer offered.
+ * written a moment after it stops changing, and at once when the tool closes ([flush]).
+ * [done] after a save: the draft is no longer offered (until the work changes again).
  */
 class DraftKeeper(
   private val scope: CoroutineScope,
@@ -201,24 +214,57 @@ class DraftKeeper(
   @Volatile
   private var savedState: Draft? = null
 
+  /** The tool had something to keep in this session (only then does "nothing" end the draft) */
+  @Volatile
+  private var hadContent = false
+
+  /** The last state written (or ended), to skip writing the same again on [flush] */
+  @Volatile
+  private var written: Draft? = null
+
+  val started: Boolean get() = job != null
+
   fun start() {
     if (job != null) return
     job = scope.launch {
       snapshotFlow { snapshot() }.collectLatest { d ->
+        if (d != null) hadContent = true
         delay(1200)
-        if (d != null && d == savedState) return@collectLatest
-        try {
-          if (d == null) repo.clear(key) else repo.save(d)
-        } catch (_: Exception) {
-          // (a draft is a convenience: a full disk never stops the work)
-        }
+        write(d)
       }
     }
   }
 
+  /**
+   * The state now, written unless already: as the tool closes (its own scope is being cancelled,
+   * so the write runs on the repository's).
+   */
+  fun flush() {
+    if (job == null) return
+    val d = snapshot()
+    if (d != null) hadContent = true
+    if (d == written) return
+    repo.scope.launch { write(d) }
+  }
+
+  private suspend fun write(d: Draft?) {
+    try {
+      when {
+        d == null && !hadContent -> Unit
+        d == null -> repo.clear(key) { savedState == null }.also { written = null }
+        else -> repo.save(d) { d != savedState }.also { written = d }
+      }
+    } catch (_: Exception) {
+      // (a draft is a convenience: a full disk never stops the work)
+    }
+  }
+
   fun done() {
-    savedState = snapshot()
-    scope.launch {
+    val d = snapshot()
+    savedState = d
+    written = d
+    // (on the repository's scope: the tool usually closes right after)
+    repo.scope.launch {
       try {
         repo.clear(key)
       } catch (_: Exception) {
@@ -231,14 +277,15 @@ class DraftKeeper(
  * A tool's draft: on opening, an earlier draft is offered ([offer]: "Continue where you left
  * off?") or, opened from the Drafts list ([begin] with resume), brought back at once; autosave
  * starts only after that, so it never overwrites a draft that was not answered yet.
- * [restore] brings a draft's pages and settings back into the tool.
+ * [restore] brings a draft's pages and settings back into the tool and says whether it could:
+ * when it could not, autosave stays off and the draft stays on disk untouched.
  */
 class DraftHost(
   private val scope: CoroutineScope,
   private val repo: DraftRepository,
   val key: String,
   snapshot: () -> Draft?,
-  private val restore: suspend (Draft) -> Unit,
+  private val restore: suspend (Draft) -> Boolean,
 ) {
   private val keeper = DraftKeeper(scope, repo, key, snapshot)
 
@@ -261,11 +308,14 @@ class DraftHost(
   }
 
   private suspend fun bringBack(d: Draft) {
-    try {
+    val ok = try {
       restore(d)
-    } finally {
-      keeper.start()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+      throw e
+    } catch (_: Throwable) {
+      false
     }
+    if (ok) keeper.start()
   }
 
   fun continueDraft() {
@@ -287,4 +337,7 @@ class DraftHost(
 
   /** The work was saved or added to a student: no longer a draft */
   fun done() = keeper.done()
+
+  /** The tool is closing (ViewModel.onCleared): the latest state written now */
+  fun flush() = keeper.flush()
 }

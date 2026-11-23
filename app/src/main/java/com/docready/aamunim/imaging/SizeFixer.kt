@@ -60,7 +60,12 @@ object SizeFixer {
 
   /** The PDF's pages made again as pictures (one at a time), then fitted */
   private fun fitPdf(context: Context, f: ReadyFile, kb: Int, maxBytes: Long): ReadyFile {
-    val n = minOf(PdfTools.pageCount(f.file), PdfTools.PAGE_LIMIT)
+    val total = PdfTools.pageCount(f.file)
+    // never a shorter PDF than was given: a page left out would go unnoticed
+    if (total > PdfTools.PAGE_LIMIT) {
+      throw IllegalArgumentException("This PDF has $total pages: Fix to fit works on up to ${PdfTools.PAGE_LIMIT}. Split it first (PDF tools).")
+    }
+    val n = total
     val pages = ArrayList<File>()
     try {
       for (i in 0 until n) {

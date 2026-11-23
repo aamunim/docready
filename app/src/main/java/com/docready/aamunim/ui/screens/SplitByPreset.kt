@@ -706,8 +706,15 @@ private fun SaveToStudent(split: SplitState) {
         picking = false
         busy = true
         scope.launch {
-          val r = app.students.attach(s.id, split.allFiles(), split.preset)
+          val r = try {
+            app.students.attach(s.id, split.allFiles(), split.preset)
+          } catch (e: Throwable) {
+            null.also {
+              android.widget.Toast.makeText(context, "Could not save to ${s.name}: ${e.message ?: "a file is no longer there"}. Make all again.", android.widget.Toast.LENGTH_LONG).show()
+            }
+          }
           busy = false
+          if (r == null) return@launch
           split.onSaved()
           android.widget.Toast.makeText(
             context,

@@ -602,7 +602,7 @@ class PdfToolsViewModel(
     )
   }
 
-  private suspend fun restore(d: Draft) {
+  private suspend fun restore(d: Draft): Boolean {
     val v = d.values
     v["mode"]?.let { m -> PdfMode.entries.firstOrNull { it.name == m }?.let { mode = it } }
     v["maxKb"]?.let { maxKbText = it }
@@ -632,11 +632,18 @@ class PdfToolsViewModel(
         pages,
       )
       split.onPagesChanged(pages)
+      return true
     } catch (e: Throwable) {
-      error = messageOf(e, "The unfinished pages could not be opened.")
+      error = messageOf(e, "The unfinished pages could not be opened.") + " The draft is kept as it was."
+      return false
     } finally {
       busy = null
     }
+  }
+
+  override fun onCleared() {
+    draft.flush()
+    super.onCleared()
   }
 
   private fun app(): Application = getApplication()
