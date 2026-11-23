@@ -531,7 +531,7 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
             notesOut?.let { n -> notes.add(n) }
           }
           FilesResult(
-            listOf(ReadyFile(out, name, "application/pdf")),
+            listOf(ReadyFile(out, name, "application/pdf", kb)),
             previewImg,
             size, size, kb, fits, if (m == PdfMode.ID_CARD) 1 else chosen.size, OutputFormat.PDF, before,
           )
@@ -707,7 +707,7 @@ fun PdfToolsScreen(onBack: () -> Unit, startMode: PdfMode = PdfMode.MERGE, onNew
   val splitFiles = vm.split.allFiles()
   if (savingSplit && splitFiles.isNotEmpty()) {
     // every item's file in one folder, named after the preset
-    SaveSheet(splitFiles, defaultFolder = vm.split.preset?.name ?: "DocReady", onDismiss = { savingSplit = false })
+    SaveSheet(splitFiles, defaultFolder = vm.split.preset?.name ?: "DocReady", onDismiss = { savingSplit = false }, naming = presetNaming(vm.split.preset))
   }
 }
 

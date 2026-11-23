@@ -41,6 +41,8 @@ data class Preset(
   val id: String,
   val name: String,
   val items: List<PresetItem>,
+  /** This preset's own file-name pattern (Settings → File names tokens); null = the general one */
+  val namePattern: String? = null,
   /** (older versions had read-only built-in presets; kept only so their saved copies still load) */
   val builtIn: Boolean = false,
   val updatedAt: Long = 0L,

@@ -416,6 +416,7 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
   val existing = remember(id) { repo.get(id) }
   // (kept when the screen turns or the app is closed in the background)
   var name by rememberSaveable(id) { mutableStateOf(existing?.name ?: "") }
+  var namePattern by rememberSaveable(id) { mutableStateOf(existing?.namePattern ?: "") }
   val items = rememberSaveable(id, saver = EditItemsSaver) {
     mutableStateListOf<EditItem>().apply { existing?.items?.forEach { add(EditItem(it)) } }
   }
@@ -460,7 +461,7 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
         pagesHint = if (e.kind == ItemKind.DOCUMENT) e.pagesHint.trim().take(20).ifEmpty { null } else null,
       )
     }
-    return Preset(existing?.id ?: PresetRepository.newId(), name.trim().take(60), built)
+    return Preset(existing?.id ?: PresetRepository.newId(), name.trim().take(60), built, namePattern = namePattern.trim().take(80).ifEmpty { null })
   }
 
   fun save() {
@@ -491,6 +492,15 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
         value = name,
         onValueChange = { name = it.take(60) },
         label = { Text("Preset name (e.g. B.Ed admission)") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+      )
+      VSpace(8)
+      OutlinedTextField(
+        value = namePattern,
+        onValueChange = { namePattern = it.take(80) },
+        label = { Text("File names (optional), e.g. {roll}_{item}") },
+        placeholder = { Text("The general pattern (Settings → File names)") },
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
       )
@@ -622,3 +632,7 @@ private fun ItemEditor(i: Int, e: EditItem, items: SnapshotStateList<EditItem>) 
     }
   }
 }
+
+/** The file-name tokens a preset gives ({preset}, and its own pattern if it has one) */
+fun presetNaming(p: Preset?): com.docready.aamunim.data.NameContext =
+  com.docready.aamunim.data.NameContext(preset = p?.name, presetPattern = p?.namePattern)

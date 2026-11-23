@@ -19,6 +19,7 @@ import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.intake.Intake
 import com.docready.aamunim.intake.IntakeTarget
 import com.docready.aamunim.ui.screens.AccountsScreen
+import com.docready.aamunim.ui.screens.FileNamesScreen
 import com.docready.aamunim.ui.screens.FolderScreen
 import com.docready.aamunim.ui.screens.HomeScreen
 import com.docready.aamunim.ui.screens.PdfMode
@@ -42,6 +43,7 @@ object Routes {
   const val PRESET = "preset/{id}"
   const val PRESET_EDIT = "preset-edit/{id}"
   const val ACCOUNTS = "accounts"
+  const val FILE_NAMES = "file-names"
   const val FOLDER = "folder/{name}"
 
   fun tool(base: String, presetId: String? = null, item: Int = -1): String =
@@ -129,7 +131,8 @@ fun DocReadyApp() {
     composable(Routes.PRESET_EDIT) { entry ->
       PresetEditScreen(entry.arguments?.getString("id") ?: "new", onDone = back)
     }
-    composable(Routes.ACCOUNTS) { AccountsScreen(back) }
+    composable(Routes.ACCOUNTS) { AccountsScreen(back, onFileNames = { nav.navigate(Routes.FILE_NAMES) }) }
+    composable(Routes.FILE_NAMES) { FileNamesScreen(back) }
     composable(Routes.FOLDER) { entry -> FolderScreen(entry.arguments?.getString("name") ?: "", back) }
   }
 

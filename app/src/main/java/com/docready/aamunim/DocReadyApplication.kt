@@ -11,6 +11,7 @@ class DocReadyApplication : Application() {
   val presets: PresetRepository by lazy { PresetRepository(this) }
   val folders: FolderRepository by lazy { FolderRepository(this) }
   val saveTargets: SaveTargets by lazy { SaveTargets(folders) }
+  val settings: com.docready.aamunim.data.SettingsRepository by lazy { com.docready.aamunim.data.SettingsRepository(this) }
 }
 
 val Context.docReady: DocReadyApplication

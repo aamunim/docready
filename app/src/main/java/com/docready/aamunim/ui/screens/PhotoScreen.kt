@@ -136,6 +136,9 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
   private val item = preset?.items?.getOrNull(itemIndex)?.takeIf { it.kind == ItemKind.PHOTO }
     ?: preset?.items?.firstOrNull { it.kind == ItemKind.PHOTO }
 
+  /** The item's place in its preset (a student's checklist), or null */
+  val itemPos: Int? = item?.let { preset?.items?.indexOf(it) }?.takeIf { it >= 0 }
+
   private var widthState by mutableStateOf((item?.widthPx ?: 300).toString())
   private var heightState by mutableStateOf((item?.heightPx ?: 300).toString())
   private var maxKbState by mutableStateOf(if (item != null) item.maxKb?.toString() ?: "" else "100")
@@ -439,7 +442,7 @@ class PhotoViewModel(app: Application, presetId: String?, itemIndex: Int) : Andr
             file.writeBytes(fit.bytes)
             val preview = BitmapFactory.decodeByteArray(fit.bytes, 0, fit.bytes.size)?.asImageBitmap()
             ImageResult(
-              ReadyFile(file, name, "image/jpeg"), preview, fit.width, fit.height,
+              ReadyFile(file, name, "image/jpeg", kb, exactSize = true, itemIndex = itemPos), preview, fit.width, fit.height,
               fit.bytes.size.toLong(), kb, fit.fits, "JPG", notes,
             )
           }
@@ -534,7 +537,7 @@ fun PhotoScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPres
 
   val ready = vm.result?.ready
   if (saving && ready != null) {
-    SaveSheet(listOf(ready), defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { saving = false })
+    SaveSheet(listOf(ready), defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { saving = false }, naming = presetNaming(vm.preset))
   }
 }
 

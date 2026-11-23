@@ -305,7 +305,7 @@ class SplitState(
               SplitItemResult(item, emptyList(), 0L, false, true, null)
             } else {
               try {
-                makeItem(item, its, cuts[i], ::nameFor)
+                makeItem(item, i, its, cuts[i], ::nameFor)
               } catch (e: Throwable) {
                 SplitItemResult(item, emptyList(), 0L, false, false, messageOf(e, "This file could not be made."))
               }
@@ -321,7 +321,7 @@ class SplitState(
   }
 
   /** One item from its pages (blocking; one big picture in memory at a time) */
-  private fun makeItem(item: PresetItem, its: List<PdfPage>, cut: NormBox?, nameFor: (String, String) -> String): SplitItemResult {
+  private fun makeItem(item: PresetItem, index: Int, its: List<PdfPage>, cut: NormBox?, nameFor: (String, String) -> String): SplitItemResult {
     val maxBytes = item.maxKb?.let { it * 1024L }
     val base = item.fileBase()
     val more = if (its.size > 1) "Only the first of its ${its.size} pages is used." else null
@@ -335,7 +335,7 @@ class SplitState(
           val name = nameFor(if (its.size == 1) base else "${base}_page-${n + 1}", "jpg")
           val out = FileNames.outputFile(ctx, name)
           out.writeBytes(fit.bytes)
-          files.add(ReadyFile(out, name, "image/jpeg"))
+          files.add(ReadyFile(out, name, "image/jpeg", item.maxKb, itemIndex = index))
           total += fit.bytes.size
           fits = fits && fit.fits
         }
@@ -349,7 +349,7 @@ class SplitState(
         } finally {
           kept.forEach { it.delete() } // (in the PDF now)
         }
-        SplitItemResult(item, listOf(ReadyFile(out, name, "application/pdf")), size, fits, false, null)
+        SplitItemResult(item, listOf(ReadyFile(out, name, "application/pdf", item.maxKb, itemIndex = index)), size, fits, false, null)
       }
 
       ItemKind.PHOTO -> {
@@ -384,7 +384,7 @@ class SplitState(
         val name = nameFor(base, "jpg")
         val out = FileNames.outputFile(ctx, name)
         out.writeBytes(fit.bytes)
-        SplitItemResult(item, listOf(ReadyFile(out, name, "image/jpeg")), fit.bytes.size.toLong(), fit.fits, false, notes.joinToString(" ").ifEmpty { null })
+        SplitItemResult(item, listOf(ReadyFile(out, name, "image/jpeg", item.maxKb, exactSize = true, itemIndex = index)), fit.bytes.size.toLong(), fit.fits, false, notes.joinToString(" ").ifEmpty { null })
       }
 
       ItemKind.SIGNATURE -> {
@@ -410,7 +410,7 @@ class SplitState(
         val name = nameFor(base, if (png) "png" else "jpg")
         val out = FileNames.outputFile(ctx, name)
         out.writeBytes(bytes)
-        SplitItemResult(item, listOf(ReadyFile(out, name, if (png) "image/png" else "image/jpeg")), bytes.size.toLong(), fits, false, more)
+        SplitItemResult(item, listOf(ReadyFile(out, name, if (png) "image/png" else "image/jpeg", item.maxKb, exactSize = true, itemIndex = index)), bytes.size.toLong(), fits, false, more)
       }
     }
   }

@@ -24,12 +24,12 @@ fun File.writeTextAtomic(text: String) {
 }
 
 object FileNames {
-  /** "photo_300x300" + "jpg" → "photo_300x300.jpg", or "-2", "-3"… when the name is taken */
+  /** "photo_300x300" + "jpg" → "photo_300x300.jpg", or "photo_300x300 (2).jpg"… when the name is taken */
   fun unique(base: String, ext: String, taken: Set<String>): String {
     val lower = taken.map { it.lowercase() }.toSet()
     var n = 1
     while (true) {
-      val name = if (n == 1) "$base.$ext" else "$base-$n.$ext"
+      val name = if (n == 1) "$base.$ext" else "$base ($n).$ext"
       if (name.lowercase() !in lower) return name
       n++
     }

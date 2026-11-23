@@ -125,6 +125,9 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
   private val item = preset?.items?.getOrNull(itemIndex)?.takeIf { it.kind == ItemKind.DOCUMENT }
     ?: preset?.items?.firstOrNull { it.kind == ItemKind.DOCUMENT }
 
+  /** The item's place in its preset (a student's checklist), or null */
+  val itemPos: Int? = item?.let { preset?.items?.indexOf(it) }?.takeIf { it >= 0 }
+
   val pages = mutableStateListOf<Page>()
   var format by mutableStateOf(if (item?.format == OutputFormat.JPG) OutputFormat.JPG else OutputFormat.PDF)
   var maxKbText by mutableStateOf(item?.maxKb?.toString() ?: "")
@@ -304,7 +307,7 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
               cleaned.forEach { it.delete() } // (in the PDF now)
             }
             FilesResult(
-              listOf(ReadyFile(out, name, "application/pdf")),
+              listOf(ReadyFile(out, name, "application/pdf", kb, itemIndex = itemPos)),
               previewImg,
               size, size, kb, fits, files.size, OutputFormat.PDF,
             )
@@ -319,7 +322,7 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
               val name = if (files.size == 1) "scan.jpg" else "scan_page-${i + 1}.jpg"
               val out = FileNames.outputFile(ctx, name)
               out.writeBytes(fit.bytes)
-              ready.add(ReadyFile(out, name, "image/jpeg"))
+              ready.add(ReadyFile(out, name, "image/jpeg", kb, itemIndex = itemPos))
               allFit = allFit && fit.fits
               total += fit.bytes.size
               largest = maxOf(largest, fit.bytes.size.toLong())
@@ -536,7 +539,7 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
 
   val r = vm.result
   if (saving && r != null) {
-    SaveSheet(r.files, defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { saving = false })
+    SaveSheet(r.files, defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { saving = false }, naming = presetNaming(vm.preset))
   }
 }
 
