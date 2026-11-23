@@ -3,6 +3,7 @@ package com.docready.aamunim.ui.screens
 import android.app.Activity
 import android.app.Application
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
 import android.widget.Toast
@@ -91,24 +92,54 @@ enum class PdfMode(val title: String) {
 }
 
 /**
- * One page in the list: a PDF's page or a picture, kept as a JPEG work file.
+ * One page in the list: a PDF's page or a picture. Only its small picture is made when it is
+ * added; the full page (A4 at 150 dpi, a JPEG work file) is made from [source] when needed, so a
+ * 150-page PDF opens quickly and uses little memory and disk.
  * [sourceBytes]: its share of the added file's weight (for "was ... → now ...").
  */
 class PdfPage(
-  val file: File,
   val thumb: ImageBitmap?,
   val from: String,
   val sourceBytes: Long = 0L,
-  /** The file it came from (a PDF, or the photo itself), to render a part again in more detail */
+  /** The file it came from (a PDF, or the photo itself) */
   val source: File? = null,
   /** Its page number in [source] when that is a PDF; -1 = a photo */
   val pdfPage: Int = -1,
-)
+  kept: File? = null,
+) {
+  @Volatile
+  private var keptFile: File? = kept
 
-class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
+  /** The full page as a picture file, made the first time it is asked for (blocking) */
+  fun file(context: Context): File {
+    keptFile?.let { if (it.exists()) return it }
+    synchronized(this) {
+      keptFile?.let { if (it.exists()) return it }
+      val src = source?.takeIf { it.exists() }
+        ?: throw IllegalStateException("A page is no longer on the phone (files are kept for a day): add it again.")
+      val f = if (pdfPage >= 0) {
+        PdfTools.renderPageFile(context, src, pdfPage)
+      } else {
+        DocTools.keepPage(context, DocTools.load(context, Uri.fromFile(src), PdfTools.PAGE_LONG_SIDE))
+      }
+      keptFile = f
+      return f
+    }
+  }
+}
+
+/** A small picture for the page lists (16-bit colour: 150 of them stay small) */
+private fun listThumb(b: Bitmap): ImageBitmap {
+  val small = DocTools.scaleToMax(b, 200)
+  val lean = small.copy(Bitmap.Config.RGB_565, false)
+  small.recycle()
+  return lean.asImageBitmap()
+}
+
+class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : AndroidViewModel(app) {
   private val ctx: Application get() = getApplication()
 
-  var mode by mutableStateOf(PdfMode.MERGE)
+  var mode by mutableStateOf(startMode)
   val pages = mutableStateListOf<PdfPage>()
   var maxKbText by mutableStateOf("")
   var busy by mutableStateOf<String?>(null)
@@ -148,55 +179,67 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
     add(files.map { f -> { f.file } to (f.mime to f.name) }, fromShare = true)
   }
 
-  /** Each: how to get the file, (its kind, its name) */
+  /**
+   * Each: how to get the file, (its kind, its name). Pages appear one by one as their small
+   * pictures are made ("Reading page X of N"); a file that can't be opened is named on screen
+   * and the others are still added.
+   */
   private fun add(items: List<Pair<() -> File, Pair<String, String>>>, fromShare: Boolean = false) {
     if (items.isEmpty()) return
     viewModelScope.launch {
       busy = "Opening the files…"
       error = null
       result = null
-      // a file that cannot be opened must not count: restored on failure
-      val filesBefore = filesAdded
-      val singleBefore = singlePdf
+      val before = pages.size
+      val problems = mutableListOf<String>()
       try {
-        val added = withContext(Dispatchers.IO) {
-          val out = mutableListOf<PdfPage>()
-          for ((fileOf, info) in items) {
-            val (mime, name) = info
-            val f = fileOf()
-            if (firstName == null) firstName = name.substringBeforeLast('.')
-            filesAdded++
+        for ((fileOf, info) in items) {
+          val (mime, name) = info
+          val pagesBefore = pages.size
+          try {
+            val f = withContext(Dispatchers.IO) { fileOf() }
             if (mime == "application/pdf") {
-              val r = PdfTools.render(ctx, f)
-              if (r.total > r.pages.size) {
-                withContext(Dispatchers.Main) { notes.add("$name: only the first ${r.pages.size} of ${r.total} pages were added.") }
+              val total = withContext(Dispatchers.Default) {
+                PdfTools.renderThumbs(f, PdfTools.PAGE_LIMIT, 200) { n, total, thumb ->
+                  val shown = thumb.asImageBitmap()
+                  withContext(Dispatchers.Main) {
+                    pages.add(PdfPage(shown, name, f.length() / maxOf(1, total), f, n))
+                    busy = "Reading page ${n + 1} of ${minOf(total, PdfTools.PAGE_LIMIT)}…"
+                  }
+                }
               }
-              singlePdf = if (filesAdded == 1 && r.total == r.pages.size) f else null
-              val share = f.length() / maxOf(1, r.total)
-              r.pages.forEachIndexed { n, p -> out.add(PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), name, share, f, n)) }
+              if (total == 0) problems.add("$name has no pages.")
+              if (total > PdfTools.PAGE_LIMIT) {
+                notes.add("$name has $total pages: only the first ${PdfTools.PAGE_LIMIT} are used.")
+              }
+              filesAdded++
+              singlePdf = if (filesAdded == 1 && total <= PdfTools.PAGE_LIMIT) f else null
             } else {
+              val shown = withContext(Dispatchers.Default) { listThumb(DocTools.load(ctx, Uri.fromFile(f), 400)) }
+              pages.add(PdfPage(shown, name, f.length(), f, -1))
+              filesAdded++
               singlePdf = null
-              val b = DocTools.load(ctx, Uri.fromFile(f), PdfTools.PAGE_LONG_SIDE)
-              val p = DocTools.keepPage(ctx, b)
-              out.add(PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), name, f.length(), f, -1))
             }
-          }
-          out
-        }
-        pages.addAll(added)
-        if (fromShare && added.size > 1 && mode != PdfMode.SPLIT) suggestSplit = true
-        if (mode == PdfMode.ID_CARD) {
-          // pictures handed to the NID tool fill the empty sides
-          for (p in added) {
-            if (front == null) front = p else if (back == null) back = p
+            if (firstName == null) firstName = name.substringBeforeLast('.')
+          } catch (e: Throwable) {
+            // (pages of a PDF that failed half way stay out)
+            while (pages.size > pagesBefore) pages.removeAt(pages.size - 1)
+            problems.add("$name: ${messageOf(e, "it could not be opened.")}")
           }
         }
-      } catch (e: Throwable) {
-        filesAdded = filesBefore
-        singlePdf = singleBefore
-        error = messageOf(e, "The file could not be opened.")
       } finally {
         busy = null
+      }
+      val added = if (pages.size > before) pages.subList(before, pages.size).toList() else emptyList()
+      if (problems.isNotEmpty()) error = problems.joinToString("\n")
+      if (added.isEmpty() && problems.isEmpty()) error = "Nothing was added: choose a PDF or photos."
+      split.onPagesChanged(pages)
+      if (fromShare && added.size > 1 && mode != PdfMode.SPLIT) suggestSplit = true
+      if (mode == PdfMode.ID_CARD) {
+        // pictures handed to the NID tool fill the empty sides
+        for (p in added) {
+          if (front == null) front = p else if (back == null) back = p
+        }
       }
     }
   }
@@ -242,7 +285,7 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
         val sides = withContext(Dispatchers.IO) {
           uris.take(2).map { u ->
             val f = FileNames.copyIn(ctx, u, "jpg")
-            PdfPage(f, DocTools.thumbnail(f, 240)?.asImageBitmap(), "scan")
+            PdfPage(listThumb(DocTools.load(ctx, Uri.fromFile(f), 400)), "scan", kept = f)
           }
         }
         front = sides.getOrNull(0)
@@ -263,7 +306,7 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
           val f = FileNames.copyIn(ctx, uri, "img")
           val b = DocTools.load(ctx, Uri.fromFile(f), 1600)
           val p = DocTools.keepPage(ctx, b)
-          PdfPage(p, DocTools.thumbnail(p, 240)?.asImageBitmap(), "picture")
+          PdfPage(listThumb(DocTools.load(ctx, Uri.fromFile(p), 400)), "picture", kept = p)
         }
         if (isFront) front = side else back = side
         result = null
@@ -284,14 +327,17 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
       return
     }
     val m = mode
-    val files = pages.map { it.file }
+    val chosen = pages.toList()
     val f = front
     val b = back
     if (m == PdfMode.ID_CARD && (f == null || b == null)) {
       error = "Add both sides of the card first."
       return
     }
-    if (m != PdfMode.ID_CARD && files.isEmpty()) return
+    if (m != PdfMode.ID_CARD && chosen.isEmpty()) {
+      error = "Add a PDF or photos first."
+      return
+    }
     val actual = actualSize
     val before = pages.sumOf { it.sourceBytes }.takeIf { m == PdfMode.COMPRESS && it > 0 }
     // the PDF exactly as it was added (no page moved or removed): never made heavier
@@ -306,16 +352,26 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
           val sourcePages: List<File>
           val name: String
           if (m == PdfMode.ID_CARD && f != null && b != null) {
-            val fb = DocTools.load(ctx, Uri.fromFile(f.file), 1600)
-            val bb = DocTools.load(ctx, Uri.fromFile(b.file), 1600)
+            val fb = DocTools.load(ctx, Uri.fromFile(f.file(ctx)), 1600)
+            val bb = DocTools.load(ctx, Uri.fromFile(b.file(ctx)), 1600)
             val page: Bitmap = PdfTools.idCardPage(fb, bb, actual)
             fb.recycle()
             bb.recycle()
             sourcePages = listOf(DocTools.keepPage(ctx, page))
             name = "nid_both_sides.pdf"
           } else {
-            sourcePages = files
-            name = if (m == PdfMode.COMPRESS) "${base}_compressed.pdf" else "merged_${files.size}_pages.pdf"
+            val keepAsIs = original != null && maxBytes != null && original.length() <= maxBytes
+            // the full pages are made now, one at a time (not when the PDF was opened)
+            sourcePages = if (keepAsIs) {
+              emptyList()
+            } else {
+              chosen.mapIndexed { i, p ->
+                withContext(Dispatchers.Main) { busy = "Preparing page ${i + 1} of ${chosen.size}…" }
+                p.file(ctx)
+              }
+            }
+            withContext(Dispatchers.Main) { busy = "Making the PDF…" }
+            name = if (m == PdfMode.COMPRESS) "${base}_compressed.pdf" else "merged_${chosen.size}_pages.pdf"
           }
           val out = FileNames.outputFile(ctx, name)
           var notesOut: String? = null
@@ -348,8 +404,8 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
           }
           FilesResult(
             listOf(ReadyFile(out, name, "application/pdf")),
-            DocTools.thumbnail(sourcePages[0], 600)?.asImageBitmap(),
-            size, size, kb, fits, sourcePages.size, OutputFormat.PDF, before,
+            sourcePages.firstOrNull()?.let { DocTools.thumbnail(it, 600)?.asImageBitmap() } ?: chosen.firstOrNull()?.thumb,
+            size, size, kb, fits, if (m == PdfMode.ID_CARD) 1 else chosen.size, OutputFormat.PDF, before,
           )
         }
       } catch (e: Throwable) {
@@ -362,15 +418,17 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
 }
 
 @Composable
-fun PdfToolsScreen(onBack: () -> Unit) {
+fun PdfToolsScreen(onBack: () -> Unit, startMode: PdfMode = PdfMode.MERGE, onNewPreset: () -> Unit = {}) {
   val context = LocalContext.current
   val app = context.applicationContext as Application
-  val vm: PdfToolsViewModel = viewModel { PdfToolsViewModel(app) }
+  val vm: PdfToolsViewModel = viewModel { PdfToolsViewModel(app, startMode) }
   var saving by rememberSaveable { mutableStateOf(false) }
   var savingSplit by rememberSaveable { mutableStateOf(false) }
   val intake by Intake.request.collectAsState()
   LaunchedEffect(intake) {
-    if (intake?.target == IntakeTarget.PDF_TOOLS) vm.addIncoming(Intake.take(IntakeTarget.PDF_TOOLS))
+    // (the split screen and the PDF tools screen are separate entries: each takes its own)
+    val mine = if (startMode == PdfMode.SPLIT) IntakeTarget.SPLIT else IntakeTarget.PDF_TOOLS
+    if (intake?.target == mine) vm.addIncoming(Intake.take(mine))
   }
   val openDocs = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
     vm.addUris(uris)
@@ -407,7 +465,13 @@ fun PdfToolsScreen(onBack: () -> Unit) {
   }
 
   Scaffold(
-    topBar = { DocTopBar("PDF tools", onBack, subtitle = "Merge, compress, NID") },
+    topBar = {
+      if (vm.mode == PdfMode.SPLIT) {
+        DocTopBar("Split by preset", onBack, subtitle = "One PDF → each paper the form asks for")
+      } else {
+        DocTopBar("PDF tools", onBack, subtitle = "Merge, compress, NID")
+      }
+    },
     bottomBar = {
       val canMake = when (vm.mode) {
         PdfMode.ID_CARD -> vm.front != null && vm.back != null
@@ -466,6 +530,10 @@ fun PdfToolsScreen(onBack: () -> Unit) {
           }
         }
       }
+      // what is happening / what went wrong: near the top, where it is seen
+      if (vm.busy != null) BusyRow(vm.busy ?: "")
+      ErrorText(vm.error)
+      NotesList(vm.notes)
       val result = vm.result
       if (result != null) {
         VSpace(12)
@@ -480,15 +548,20 @@ fun PdfToolsScreen(onBack: () -> Unit) {
         FilesResultCard(result)
         Text(result.files[0].name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
       } else if (vm.mode == PdfMode.SPLIT) {
-        SplitTool(vm.split, vm.pages, addFiles, { savingSplit = true }, outerBusy = vm.busy != null)
+        SplitTool(
+          vm.split,
+          vm.pages,
+          addFiles,
+          { savingSplit = true },
+          outerBusy = vm.busy != null,
+          onNewPreset = onNewPreset,
+          onStartAgain = { vm.clear() },
+        )
       } else if (vm.mode == PdfMode.ID_CARD) {
         IdCardTool(vm, startCardScan, { pickFront.launch("image/*") }, { pickBack.launch("image/*") })
       } else {
         PagesTool(vm, addFiles)
       }
-      if (vm.busy != null) BusyRow(vm.busy ?: "")
-      NotesList(vm.notes)
-      ErrorText(vm.error)
     }
   }
 

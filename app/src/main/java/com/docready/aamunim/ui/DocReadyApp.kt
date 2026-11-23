@@ -21,6 +21,7 @@ import com.docready.aamunim.intake.IntakeTarget
 import com.docready.aamunim.ui.screens.AccountsScreen
 import com.docready.aamunim.ui.screens.FolderScreen
 import com.docready.aamunim.ui.screens.HomeScreen
+import com.docready.aamunim.ui.screens.PdfMode
 import com.docready.aamunim.ui.screens.PdfToolsScreen
 import com.docready.aamunim.ui.screens.PhotoScreen
 import com.docready.aamunim.ui.screens.PresetDetailScreen
@@ -36,6 +37,7 @@ object Routes {
   const val SIGNATURE = "signature?preset={preset}&item={item}"
   const val SCAN = "scan?preset={preset}&item={item}"
   const val PDF = "pdf"
+  const val SPLIT = "split"
   const val PRESETS = "presets"
   const val PRESET = "preset/{id}"
   const val PRESET_EDIT = "preset-edit/{id}"
@@ -77,6 +79,7 @@ fun DocReadyApp() {
         onPhoto = { nav.navigate(Routes.tool("photo")) },
         onSignature = { nav.navigate(Routes.tool("signature")) },
         onPdfTools = { nav.navigate(Routes.PDF) },
+        onSplit = { nav.navigate(Routes.SPLIT) },
         onPresets = { nav.navigate(Routes.PRESETS) },
         onPreset = { nav.navigate(Routes.preset(it)) },
         onFolder = { nav.navigate(Routes.folder(it)) },
@@ -95,7 +98,11 @@ fun DocReadyApp() {
       val args = entry.arguments
       ScanScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back)
     }
-    composable(Routes.PDF) { PdfToolsScreen(back) }
+    composable(Routes.PDF) { PdfToolsScreen(back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }) }
+    // (a destination of its own: Share / Open with can land in it while PDF tools is open)
+    composable(Routes.SPLIT) {
+      PdfToolsScreen(back, startMode = PdfMode.SPLIT, onNewPreset = { nav.navigate(Routes.presetEdit("new")) })
+    }
     composable(Routes.PRESETS) {
       PresetsScreen(
         onBack = back,
@@ -136,6 +143,7 @@ private fun IntakeHandler(nav: NavHostController) {
   LaunchedEffect(r) {
     when (r.target) {
       IntakeTarget.PDF_TOOLS -> nav.navigate(Routes.PDF) { launchSingleTop = true }
+      IntakeTarget.SPLIT -> nav.navigate(Routes.SPLIT) { launchSingleTop = true }
       IntakeTarget.PHOTO -> nav.navigate(Routes.tool("photo")) { launchSingleTop = true }
       IntakeTarget.SIGNATURE -> nav.navigate(Routes.tool("signature")) { launchSingleTop = true }
       null -> Unit
@@ -149,10 +157,16 @@ private fun IntakeHandler(nav: NavHostController) {
         if (r.files.isEmpty()) {
           Text("DocReady takes photos and PDFs. ${r.skipped} shared file(s) could not be used.")
         } else {
+          val onePhoto = r.files.size == 1 && !r.files[0].isPdf
           Column {
-            TextButton(onClick = { Intake.choose(IntakeTarget.PHOTO) }) { Text("Photo (face crop, background, size)") }
-            TextButton(onClick = { Intake.choose(IntakeTarget.SIGNATURE) }) { Text("Signature (cut and clean)") }
-            TextButton(onClick = { Intake.choose(IntakeTarget.PDF_TOOLS) }) { Text("PDF tools (make a PDF)") }
+            if (r.skipped > 0) Text("${r.skipped} file(s) were not photos or PDFs and are left out.")
+            if (onePhoto) {
+              TextButton(onClick = { Intake.choose(IntakeTarget.PHOTO) }) { Text("Photo (face crop, background, size)") }
+              TextButton(onClick = { Intake.choose(IntakeTarget.SIGNATURE) }) { Text("Signature (cut and clean)") }
+            } else {
+              TextButton(onClick = { Intake.choose(IntakeTarget.SPLIT) }) { Text("Split by preset (each paper of a form)") }
+            }
+            TextButton(onClick = { Intake.choose(IntakeTarget.PDF_TOOLS) }) { Text("PDF tools (merge, compress, NID)") }
           }
         }
       },

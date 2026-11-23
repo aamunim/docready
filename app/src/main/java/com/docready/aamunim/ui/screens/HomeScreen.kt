@@ -54,6 +54,7 @@ fun HomeScreen(
   onPhoto: () -> Unit,
   onSignature: () -> Unit,
   onPdfTools: () -> Unit,
+  onSplit: () -> Unit,
   onPresets: () -> Unit,
   onPreset: (String) -> Unit,
   onFolder: (String) -> Unit,
@@ -108,6 +109,8 @@ fun HomeScreen(
         ActionCard(AppIcons.Signature, "Signature", "Cut and clean", primary = false, onClick = onSignature, modifier = Modifier.weight(1f))
         ActionCard(AppIcons.Pages, "PDF tools", "Merge, compress, NID", primary = false, onClick = onPdfTools, modifier = Modifier.weight(1f))
       }
+      Spacer(Modifier.height(10.dp))
+      SplitCard(onSplit)
 
       Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("Presets", style = SectionLabelStyle, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
@@ -216,6 +219,33 @@ private fun FolderRow(folder: LocalFolder, onClick: () -> Unit) {
           "$n file${if (n == 1) "" else "s"} · on this phone",
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+    }
+  }
+}
+
+/** "Split by preset": one merged PDF → each paper a form asks for */
+@Composable
+private fun SplitCard(onClick: () -> Unit) {
+  Surface(
+    onClick = onClick,
+    shape = RoundedCornerShape(18.dp),
+    color = MaterialTheme.colorScheme.surface,
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+    modifier = Modifier.fillMaxWidth().height(72.dp),
+  ) {
+    Row(Modifier.padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+      Icon(AppIcons.Copy, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
+      Spacer(Modifier.width(12.dp))
+      Column(Modifier.weight(1f)) {
+        Text("Split by preset", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+        Text(
+          "One PDF of all papers → photo, signature, each certificate",
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          fontSize = 12.sp,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
         )
       }
     }

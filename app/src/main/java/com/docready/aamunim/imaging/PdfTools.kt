@@ -22,10 +22,11 @@ object PdfTools {
   /** A4's long side at 150 dpi */
   const val PAGE_LONG_SIDE = 1754
 
-  class Rendered(val pages: List<File>, val total: Int)
+  /** At most this many pages of one PDF are used (a note tells the user when there are more) */
+  const val PAGE_LIMIT = 150
 
-  /** A PDF's first [maxPages] pages as JPEG work files (their longer side [maxSide] px) */
-  fun render(context: Context, pdf: File, maxSide: Int = PAGE_LONG_SIDE, maxPages: Int = 60): Rendered {
+  /** The PDF opened (a password / damaged PDF gives a clear message) */
+  private inline fun <T> withRenderer(pdf: File, block: (PdfRenderer) -> T): T {
     val fd = ParcelFileDescriptor.open(pdf, ParcelFileDescriptor.MODE_READ_ONLY)
     val renderer = try {
       PdfRenderer(fd)
@@ -34,11 +35,27 @@ object PdfTools {
       throw IllegalStateException("This PDF can't be opened (locked with a password, or damaged).")
     }
     try {
-      val out = ArrayList<File>()
-      for (n in 0 until min(renderer.pageCount, maxPages)) {
+      return block(renderer)
+    } finally {
+      renderer.close()
+      fd.close()
+    }
+  }
+
+  fun pageCount(pdf: File): Int = withRenderer(pdf) { it.pageCount }
+
+  /**
+   * Small pictures of the first [limit] pages (their longer side [side] px, 16-bit colour to keep
+   * 150 of them small), one at a time: [onPage] gets each as soon as it is made. Fast: no full
+   * page is made here (see [renderPageFile]). Returns the PDF's page count.
+   */
+  suspend fun renderThumbs(pdf: File, limit: Int, side: Int, onPage: suspend (index: Int, total: Int, thumb: Bitmap) -> Unit): Int =
+    withRenderer(pdf) { renderer ->
+      val total = renderer.pageCount
+      for (n in 0 until min(total, limit)) {
         val page = renderer.openPage(n)
-        try {
-          val k = maxSide.toFloat() / maxOf(page.width, page.height)
+        val thumb = try {
+          val k = side.toFloat() / maxOf(page.width, page.height)
           val bmp = Bitmap.createBitmap(
             maxOf(1, (page.width * k).roundToInt()),
             maxOf(1, (page.height * k).roundToInt()),
@@ -46,18 +63,24 @@ object PdfTools {
           )
           bmp.eraseColor(Color.WHITE)
           page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-          out.add(DocTools.save(context, DocTools.jpeg(bmp, 92), "jpg"))
+          val small = bmp.copy(Bitmap.Config.RGB_565, false)
           bmp.recycle()
+          small
         } finally {
           page.close()
         }
+        onPage(n, total, thumb)
       }
-      return Rendered(out, renderer.pageCount)
-    } catch (e: OutOfMemoryError) {
-      throw IllegalStateException("The PDF is too big for this phone's memory.")
+      total
+    }
+
+  /** One page as a JPEG work file (A4 at 150 dpi), made when it is needed */
+  fun renderPageFile(context: Context, pdf: File, index: Int): File {
+    val b = renderPage(pdf, index, PAGE_LONG_SIDE)
+    try {
+      return DocTools.save(context, DocTools.jpeg(b, 92), "jpg")
     } finally {
-      renderer.close()
-      fd.close()
+      b.recycle()
     }
   }
 

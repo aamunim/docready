@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -185,7 +186,7 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
   private fun prepared(page: PdfPage, maxSide: Int): Bitmap {
     val fix = fixes[page]
     val q = fix?.quad?.takeIf { DocTools.isConvex(it) }
-    val b = DocTools.load(ctx, Uri.fromFile(page.file), if (q != null) 2600 else maxSide)
+    val b = DocTools.load(ctx, Uri.fromFile(page.file(ctx)), if (q != null) 2600 else maxSide)
     return DocTools.scaleToMax(DocTools.straighten(b, q, fix?.turn ?: 0), maxSide)
   }
 
@@ -288,7 +289,7 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
   fun startFix(page: PdfPage) {
     scope.launch {
       try {
-        val b = withContext(Dispatchers.Default) { DocTools.load(ctx, Uri.fromFile(page.file), 1400) }
+        val b = withContext(Dispatchers.Default) { DocTools.load(ctx, Uri.fromFile(page.file(ctx)), 1400) }
         fixBitmap = b
         fixImage = b.asImageBitmap()
         val fix = fixes[page]
@@ -335,7 +336,7 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
       busy = "Straightening the page…"
       try {
         val thumb = withContext(Dispatchers.Default) {
-          val b = DocTools.straighten(DocTools.load(ctx, Uri.fromFile(page.file), 800), q, turn)
+          val b = DocTools.straighten(DocTools.load(ctx, Uri.fromFile(page.file(ctx)), 800), q, turn)
           DocTools.scaleToMax(b, 240).asImageBitmap()
         }
         if (q == null && turn == 0) {
@@ -358,9 +359,13 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
 
   // ---- making every item
   fun makeAll(pages: List<PdfPage>) {
-    val p = preset ?: return
-    if (assigned.isEmpty()) {
-      error = "Give the pages to the preset's items first."
+    val p = preset
+    if (p == null) {
+      error = "Choose the form's preset first (step 1)."
+      return
+    }
+    if (pages.none { assigned[it] != null }) {
+      error = "No page is given to an item yet: select pages, choose an item, then tap “Give”."
       return
     }
     val plan = p.items.indices.map { i -> pagesOf(i, pages) }
@@ -375,6 +380,7 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
           fun nameFor(base: String, ext: String) = FileNames.unique(base, ext, taken).also { taken.add(it) }
           p.items.mapIndexed { i, item ->
             val its = plan[i]
+            withContext(Dispatchers.Main) { busy = "Making ${item.title} (${i + 1} of ${p.items.size})…" }
             if (its.isEmpty()) {
               SplitItemResult(item, emptyList(), 0L, false, true, null)
             } else {
@@ -501,7 +507,15 @@ class SplitState(private val ctx: Application, private val scope: CoroutineScope
 /** The split tool's screen part (inside PDF tools) */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun SplitTool(split: SplitState, pages: List<PdfPage>, addFiles: () -> Unit, saveAll: () -> Unit, outerBusy: Boolean = false) {
+fun SplitTool(
+  split: SplitState,
+  pages: List<PdfPage>,
+  addFiles: () -> Unit,
+  saveAll: () -> Unit,
+  outerBusy: Boolean = false,
+  onNewPreset: () -> Unit = {},
+  onStartAgain: () -> Unit = {},
+) {
   // nothing is started while pages are still being opened or made
   val idle = split.busy == null && !outerBusy
   val presets by LocalContext.current.docReady.presets.presets.collectAsState()
@@ -562,25 +576,51 @@ fun SplitTool(split: SplitState, pages: List<PdfPage>, addFiles: () -> Unit, sav
     color = MaterialTheme.colorScheme.onSurfaceVariant,
     modifier = Modifier.padding(top = 12.dp),
   )
-  VSpace(10)
-  OutlinedButton(onClick = addFiles, enabled = idle) {
-    Icon(AppIcons.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-    Spacer(Modifier.width(6.dp))
-    Text(if (pages.isEmpty()) "Add PDF or photos" else "Add more")
+  VSpace(12)
+  if (pages.isEmpty()) {
+    Button(onClick = addFiles, enabled = idle, modifier = Modifier.fillMaxWidth().height(56.dp)) {
+      Icon(AppIcons.Add, contentDescription = null, modifier = Modifier.size(20.dp))
+      Spacer(Modifier.width(8.dp))
+      Text("Choose PDF or photos")
+    }
+    Text(
+      "Up to ${PdfTools.PAGE_LIMIT} pages. You can add more files after.",
+      style = MaterialTheme.typography.bodySmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+      modifier = Modifier.padding(top = 6.dp),
+    )
+    return
   }
-  if (pages.isEmpty()) return
+  Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+    OutlinedButton(onClick = addFiles, enabled = idle) {
+      Icon(AppIcons.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+      Spacer(Modifier.width(6.dp))
+      Text("Add more")
+    }
+    TextButton(onClick = onStartAgain, enabled = idle) { Text("Start again") }
+  }
 
-  SectionLabel("Preset")
+  SectionLabel("1 · Choose the form's preset")
   Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
     for (p in presets) FilterChip(selected = split.preset?.id == p.id, onClick = { split.choosePreset(p) }, label = { Text(p.name) })
   }
+  Row(verticalAlignment = Alignment.CenterVertically) {
+    Text(
+      "Each paper of the form (SSC certificate, NID…) is an item of a preset.",
+      style = MaterialTheme.typography.bodySmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+      modifier = Modifier.weight(1f),
+    )
+    TextButton(onClick = onNewPreset) { Text("+ New preset") }
+  }
   val preset = split.preset
   if (preset == null) {
-    Text("Choose the form's preset. You can make your own in Presets (+ Add a document).", style = MaterialTheme.typography.bodySmall)
+    SplitHint("Choose a preset above, then give the pages below to its items.")
+    SplitPages(split, pages, null)
     return
   }
 
-  SectionLabel("Give the selected pages to")
+  SectionLabel("2 · Select pages, then give them to")
   Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
     preset.items.forEachIndexed { i, item ->
       val n = split.pagesOf(i, pages).size
@@ -603,38 +643,8 @@ fun SplitTool(split: SplitState, pages: List<PdfPage>, addFiles: () -> Unit, sav
     }
   }
 
-  SectionLabel("Pages · tap to select")
-  FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    pages.forEachIndexed { n, page ->
-      val isSelected = page in split.selected
-      val item = split.assigned[page]?.let { preset.items.getOrNull(it) }
-      Column(Modifier.width(92.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Surface(
-          onClick = { split.toggle(page) },
-          shape = RoundedCornerShape(8.dp),
-          border = BorderStroke(
-            if (isSelected) 3.dp else 1.dp,
-            if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-          ),
-          modifier = Modifier.size(width = 84.dp, height = 112.dp),
-        ) {
-          (split.fixedThumbs[page] ?: page.thumb)?.let {
-            Image(it, contentDescription = "Page ${n + 1}", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(2.dp))
-          }
-        }
-        Text("${n + 1}", style = MaterialTheme.typography.labelSmall)
-        Text(
-          item?.title ?: "not used",
-          style = MaterialTheme.typography.labelSmall,
-          fontWeight = if (item != null) FontWeight.SemiBold else FontWeight.Normal,
-          color = if (item != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          textAlign = TextAlign.Center,
-        )
-      }
-    }
-  }
+  if (split.selected.isEmpty()) SplitHint("Tap pages below to select them.")
+  SplitPages(split, pages, preset)
 
   // photos and signatures are often a small part of a scanned page: cut them out
   val cutItems = preset.items.withIndex().filter { (i, it) -> it.kind != ItemKind.DOCUMENT && split.pagesOf(i, pages).isNotEmpty() }
@@ -696,5 +706,54 @@ private fun SplitResultCard(r: SplitItemResult) {
       style = MaterialTheme.typography.bodySmall,
       color = DocReadyColors.extra.onWarningContainer,
     )
+  }
+}
+
+@Composable
+private fun SplitHint(text: String) {
+  Text(
+    text,
+    style = MaterialTheme.typography.bodyMedium,
+    fontWeight = FontWeight.SemiBold,
+    color = MaterialTheme.colorScheme.primary,
+    modifier = Modifier.padding(top = 8.dp),
+  )
+}
+
+/** Every page as a tile: tap to select; under it, the item it was given to */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SplitPages(split: SplitState, pages: List<PdfPage>, preset: Preset?) {
+  SectionLabel("Pages (${pages.size}) · tap to select")
+  FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    pages.forEachIndexed { n, page ->
+      val isSelected = page in split.selected
+      val item = split.assigned[page]?.let { preset?.items?.getOrNull(it) }
+      Column(Modifier.width(92.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Surface(
+          onClick = { split.toggle(page) },
+          shape = RoundedCornerShape(8.dp),
+          border = BorderStroke(
+            if (isSelected) 3.dp else 1.dp,
+            if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+          ),
+          modifier = Modifier.size(width = 84.dp, height = 112.dp),
+        ) {
+          (split.fixedThumbs[page] ?: page.thumb)?.let {
+            Image(it, contentDescription = "Page ${n + 1}", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(2.dp))
+          }
+        }
+        Text("${n + 1}", style = MaterialTheme.typography.labelSmall)
+        Text(
+          item?.title ?: "not used",
+          style = MaterialTheme.typography.labelSmall,
+          fontWeight = if (item != null) FontWeight.SemiBold else FontWeight.Normal,
+          color = if (item != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          textAlign = TextAlign.Center,
+        )
+      }
+    }
   }
 }

@@ -15,11 +15,13 @@ phone, with no sign-in:
   page): drag and size it, then save the page as JPG or PDF.
 - **PDF tools**: merge PDFs and photos into one PDF, reorder / delete pages, compress a PDF
   under N KB, both sides of the NID card on one A4 page.
-- **Split by preset** (PDF tools): one merged PDF (and / or photos) → each page given to a
+- **Split by preset** (its own tile on Home, also in PDF tools): one merged PDF (and / or photos) → each page given to a
   preset item (photo, signature, SSC certificate, NID…), photo / signature cut from their
   page, pages straightened if needed → "Make all" makes every item's file in its own size
   and KB limit (`ssc_certificate.pdf`, `photo_300x300.jpg`…), saved together in one folder
-  or shared. Offered automatically when several pages are shared to the app.
+  or shared. Offered when a PDF or several files are shared / opened with the app. PDFs of up
+  to 150 pages: only small page pictures are made when it opens ("Reading page X of N"); full
+  pages are made from the PDF when the files are made.
 - **Presets**: built-in ones (copyable) and your own (named items: photo / signature /
   document such as "SSC certificate", size, max KB, format, background).
 - **Save**: to this phone (Downloads / DocReady / *folder*) or Share to any app. Files get
