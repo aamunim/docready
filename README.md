@@ -49,7 +49,24 @@ phone, with no sign-in:
   before / after loupe, "Beautify all pages"; each page tile shows what ran
   ("✨ shadow · yellow · fold"). A blurry page says "rescan for better quality".
 - **Save**: to this phone (Downloads / DocReady / *folder*) or Share to any app. Files get
-  readable names (`photo_300x300.jpg`) and are never overwritten (`-2`, `-3`…).
+  readable names (`photo_300x300.jpg`) and are never overwritten (`name (2).jpg`…). The save
+  sheet checks each file against its limit (green fits / amber within 10 % / red too big) with
+  **Fix to fit**, and can save or share several files **as one ZIP**.
+- **File names** (Accounts → File names): a pattern from `{name}` `{roll}` `{item}`
+  `{preset}` `{date}` `{seq}`, a date format and a separator; Bangla names can be written in
+  Latin letters ("রহিম উদ্দিন" → `Rahim_Uddin`). A preset can have its own pattern.
+- **Students**: each applicant's name (any script), roll / registration, date of birth, notes
+  and form preset. Their page is a checklist of the preset's items (done / missing / too big):
+  tap an item to open the right tool for it, and "Add to <name>" puts the result in the
+  student's files (kept in the app, and saved to Downloads / DocReady / *student*). Split by
+  preset can save all its files to a student. Share all as ZIP / Save as ZIP; search, sort,
+  delete (their Downloads files only if asked).
+- **Drafts**: Scan, PDF tools, Split by preset and Photo keep unfinished work (sources and
+  edits, in the app's files) a moment after each change; opening the tool again asks
+  "Continue where you left off?". Home lists the drafts; a draft ends when its result is saved
+  and is removed after 30 days untouched.
+- **Check size** (Home): any photo or PDF → KB, pages or pixels; give a KB limit and Fix to fit
+  (optionally keeping the pixel size), then save or share.
 - **Share to / Open with DocReady**: photos and PDFs shared or opened from other apps open
   in PDF tools / Photo / Signature.
 
@@ -102,9 +119,10 @@ uploading to Play. The keystore is written to a temp file for the run and remove
 app/src/main/java/com/docready/aamunim/
   MainActivity.kt, DocReadyApplication.kt
   imaging/   DocTools (load, clean, warp, fit to KB, PDF writer), DocPhoto (face + background),
-             SignatureTools, PdfTools (PdfRenderer, NID page), Scanner (ML Kit scanner)
-  data/      presets + local folders (JSON), file naming
-  save/      SaveTarget (PHONE, SHARE; GOOGLE_DRIVE and ITTC = "Coming soon")
+             SignatureTools, PdfTools (PdfRenderer, NID page), Scanner (ML Kit scanner),
+             SizeFixer (size check, Fix to fit)
+  data/      presets, local folders, students, drafts, settings (JSON); file naming (Naming.kt)
+  save/      SaveTarget (PHONE, SHARE; GOOGLE_DRIVE and ITTC = "Coming soon"), Zipper
   intake/    "Share to DocReady"
   ui/        theme, components (save sheet, crop box, icons), screens, navigation
 ```
@@ -112,7 +130,7 @@ app/src/main/java/com/docready/aamunim/
 The image code is ported from the DocReady Expo module (lead repo,
 `modules/doc-scan/android`), with the React Native parts removed.
 
-## Phase 2 plan (not in this version)
+## Later (not in this version)
 
 - **Google Drive (optional, personal)**: Google Identity Services `AuthorizationClient`
   (`Identity.getAuthorizationClient(activity).authorize(...)`) with only the

@@ -147,6 +147,8 @@ fun HomeScreen(
         if (students.isEmpty()) "Each applicant's papers together, with a checklist" else "${students.size} student${if (students.size == 1) "" else "s"} · checklist, files, ZIP",
         onStudents,
       )
+      Spacer(Modifier.height(10.dp))
+      WideCard(AppIcons.Gauge, "Check size", "Any photo or PDF: KB, pages, pixels; make it fit a limit", onCheckSize)
 
       Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("Presets", style = SectionLabelStyle, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))

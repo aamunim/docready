@@ -19,6 +19,7 @@ import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.intake.Intake
 import com.docready.aamunim.intake.IntakeTarget
 import com.docready.aamunim.ui.screens.AccountsScreen
+import com.docready.aamunim.ui.screens.CheckSizeScreen
 import com.docready.aamunim.ui.screens.FileNamesScreen
 import com.docready.aamunim.ui.screens.FolderScreen
 import com.docready.aamunim.ui.screens.HomeScreen
@@ -45,6 +46,7 @@ object Routes {
   const val STUDENT = "student/{id}"
   const val STUDENT_EDIT = "student-edit/{id}"
   const val SPLIT = "split?draft={draft}"
+  const val CHECK_SIZE = "check-size"
   const val PRESETS = "presets"
   const val PRESET = "preset/{id}"
   const val PRESET_EDIT = "preset-edit/{id}"
@@ -119,6 +121,7 @@ fun DocReadyApp() {
         onFolder = { nav.navigate(Routes.folder(it)) },
         onAccounts = { nav.navigate(Routes.ACCOUNTS) },
         onStudents = { nav.navigate(Routes.STUDENTS) },
+        onCheckSize = { nav.navigate(Routes.CHECK_SIZE) },
         onDraft = { d ->
           // the tool brings its draft back at once ("scan", "pdf", "split" or "photo")
           nav.navigate(Routes.tool(d.tool, d.presetId, d.itemIndex, d.studentId, draft = true))
@@ -176,6 +179,7 @@ fun DocReadyApp() {
     composable(Routes.SPLIT, arguments = listOf(draftArg)) { entry ->
       PdfToolsScreen(back, startMode = PdfMode.SPLIT, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }, resume = entry.arguments.resume())
     }
+    composable(Routes.CHECK_SIZE) { CheckSizeScreen(back) }
     composable(Routes.PRESETS) {
       PresetsScreen(
         onBack = back,
