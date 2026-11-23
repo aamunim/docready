@@ -331,7 +331,7 @@ class SplitState(
         var total = 0L
         var fits = true
         its.forEachIndexed { n, page ->
-          val fit = DocTools.fitPicture(prepared(page, PdfTools.PAGE_LONG_SIDE), maxBytes, false)
+          val fit = DocTools.fitPicture(PdfTools.atBestSize { side -> prepared(page, side) }, maxBytes, false)
           val name = nameFor(if (its.size == 1) base else "${base}_page-${n + 1}", "jpg")
           val out = FileNames.outputFile(ctx, name)
           out.writeBytes(fit.bytes)
@@ -341,7 +341,7 @@ class SplitState(
         }
         SplitItemResult(item, files, total, fits, false, if (its.size > 1 && maxBytes != null) "The limit is for each picture." else null)
       } else {
-        val kept = its.map { DocTools.keepPage(ctx, prepared(it, PdfTools.PAGE_LONG_SIDE)) }
+        val kept = its.map { page -> DocTools.keepPage(ctx, PdfTools.atBestSize { side -> prepared(page, side) }) }
         val name = nameFor(base, "pdf")
         val out = FileNames.outputFile(ctx, name)
         val (size, _, fits) = try {

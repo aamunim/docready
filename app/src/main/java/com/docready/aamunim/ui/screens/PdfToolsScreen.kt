@@ -464,7 +464,13 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
               chosen.mapIndexed { i, p ->
                 withContext(Dispatchers.Main) { busy = "Preparing page ${i + 1} of ${chosen.size}…" }
                 // the page made from its source with its edits, kept as a work file
-                DocTools.keepPage(ctx, p.rendered(ctx, edits[i], PdfTools.PAGE_LONG_SIDE))
+                // full detail (smaller only if a KB limit needs it; long documents a little smaller)
+                val sides = if (chosen.size <= 30) {
+                  listOf(PdfTools.DOC_LONG_SIDE, 2400, PdfTools.PAGE_LONG_SIDE)
+                } else {
+                  listOf(PdfTools.LONG_DOC_SIDE, PdfTools.PAGE_LONG_SIDE)
+                }
+                DocTools.keepPage(ctx, PdfTools.atBestSize(sides) { side -> p.rendered(ctx, edits[i], side) })
               }
             }
             withContext(Dispatchers.Main) { busy = "Making the PDF…" }

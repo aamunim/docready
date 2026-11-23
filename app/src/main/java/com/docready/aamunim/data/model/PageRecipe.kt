@@ -6,6 +6,12 @@ import kotlinx.serialization.Serializable
 @Serializable
 enum class Look(val title: String) {
   ORIGINAL("Original"),
+  /** Scanner-app clean: shadows, folds and tint gone, crisp dark text on white, colours natural */
+  MAGIC("Magic"),
+  /** Smooth black & white with soft edges */
+  MAGIC_BW("Magic B&W"),
+  /** Brighter, even paper, natural colours */
+  LIGHTEN("Lighten"),
   AUTO("Auto color"),
   GREY("Grey"),
   BW("B&W"),
@@ -61,7 +67,10 @@ data class PageRecipe(
   companion object {
     val Plain = PageRecipe()
 
-    /** A new document page: shadows removed, colour evened */
-    val Document = PageRecipe(look = Look.AUTO, removeShadows = true)
+    /**
+     * A new document page from the camera or the scanner: Magic (shadows, folds and the paper's
+     * tint removed by its own paper estimate, so "remove shadows" is not needed on top)
+     */
+    val Document = PageRecipe(look = Look.MAGIC)
   }
 }

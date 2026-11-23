@@ -13,6 +13,7 @@ import com.docready.aamunim.imaging.beauty.FBox
 import com.docready.aamunim.imaging.beauty.FoldPx
 import com.docready.aamunim.imaging.beauty.IBox
 import com.docready.aamunim.imaging.beauty.MarkKind
+import com.docready.aamunim.imaging.beauty.MagicLooks
 import com.docready.aamunim.imaging.beauty.MarkShape
 import com.docready.aamunim.imaging.beauty.Px
 import kotlin.math.max
@@ -35,6 +36,37 @@ class BeautyResult(
 object Beautifier {
   /** Analysis is done on a copy of at most this size */
   const val ANALYSIS_SIDE = 1000
+
+  /** Runs a pure step on [b] (mutable copy if needed) and writes the result back */
+  private inline fun onPx(src: Bitmap, step: (Px) -> Unit): Bitmap {
+    val b = DocTools.mutable(src)
+    val p = toPx(b)
+    step(p)
+    b.setPixels(p.data, 0, p.w, 0, 0, p.w, p.h)
+    return b
+  }
+
+  /** Photos, logos and stamps on a page (found on a ≤ 1000 px copy), as boxes of [b] */
+  fun protectBoxes(b: Bitmap): List<IBox> {
+    val k = minOf(1f, ANALYSIS_SIDE.toFloat() / maxOf(b.width, b.height))
+    val small = if (k < 1f) Bitmap.createScaledBitmap(b, max(1, (b.width * k).roundToInt()), max(1, (b.height * k).roundToInt()), true) else b
+    val px = toPx(small)
+    if (small !== b) small.recycle()
+    return BeautyAnalyzer.protectedAreas(px).map { it.toPx(b.width, b.height) }
+  }
+
+  /** Magic: crisp dark text on clean white, colours natural, photos / logos / stamps left as they are */
+  fun magic(src: Bitmap): Bitmap {
+    val protect = protectBoxes(src)
+    return onPx(src) { MagicLooks.magic(it, protect) }
+  }
+
+  fun magicBw(src: Bitmap): Bitmap = onPx(src) { MagicLooks.magicBw(it) }
+
+  fun lighten(src: Bitmap): Bitmap = onPx(src) { MagicLooks.lighten(it) }
+
+  /** "Remove shadows": the paper's light evened by its estimate (hard shadow edges and folds too, no halos) */
+  fun flatten(src: Bitmap): Bitmap = onPx(src) { MagicLooks.flatten(it) }
 
   fun toPx(b: Bitmap): Px {
     val data = IntArray(b.width * b.height)

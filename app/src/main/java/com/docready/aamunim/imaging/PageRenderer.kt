@@ -72,12 +72,18 @@ object PageRenderer {
     return out
   }
 
+  /** The looks that measure the paper themselves (shadows and folds are part of them) */
+  private val SELF_FLATTENING = setOf(Look.MAGIC, Look.MAGIC_BW, Look.LIGHTEN)
+
   /** Shadows out (the paper's own light measured and evened), the look, then brightness / contrast */
   fun look(src: Bitmap, r: PageRecipe): Bitmap {
     var b = DocTools.mutable(src)
-    if (r.removeShadows) b = DocTools.flattenLight(b)
+    if (r.removeShadows && r.look !in SELF_FLATTENING) b = Beautifier.flatten(b)
     b = when (r.look) {
       Look.ORIGINAL -> b
+      Look.MAGIC -> Beautifier.magic(b)
+      Look.MAGIC_BW -> Beautifier.magicBw(b)
+      Look.LIGHTEN -> Beautifier.lighten(b)
       Look.AUTO -> DocTools.autoLevels(b)
       Look.GREY -> DocTools.toGray(DocTools.autoLevels(b))
       Look.BW -> DocTools.toBlackWhite(DocTools.autoLevels(b), 15)

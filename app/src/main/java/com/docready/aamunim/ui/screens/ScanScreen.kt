@@ -194,11 +194,15 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
     return DocTools.scaleToMax(b, 240).asImageBitmap()
   }
 
-  /** A page made from its picture and its edits, A4 at 150 dpi at most */
-  private fun prepared(p: Page): Bitmap {
-    val big = p.recipe.quad != null
-    val b = DocTools.load(ctx, Uri.fromFile(p.file), if (big) 2600 else PdfTools.PAGE_LONG_SIDE)
-    return DocTools.scaleToMax(PageRenderer.render(b, p.recipe), PdfTools.PAGE_LONG_SIDE)
+  /**
+   * A page made from its picture and its edits at full detail (up to 3000 px, about 250 dpi on
+   * A4; a phone short of memory gets 2400, then 1754). A KB limit makes it smaller later, only
+   * as far as needed.
+   */
+  private fun prepared(p: Page): Bitmap = PdfTools.atBestSize { side ->
+    // (straightening from corners takes a little more of the photo than the page it gives)
+    val b = DocTools.load(ctx, Uri.fromFile(p.file), if (p.recipe.quad != null) side + 600 else side)
+    DocTools.scaleToMax(PageRenderer.render(b, p.recipe), side)
   }
 
   // ---- the shared page editor (all pages, starting at one)
