@@ -400,7 +400,7 @@ private fun PhotoEditor(vm: PhotoViewModel) {
         VSpace(12)
         ImageResultCard(r, fromPreset = vm.preset != null)
         NotesList(r.notes)
-        if (vm.stale && vm.busy == null) StaleNote("The size changed: tap “Apply size” to make the photo again.")
+        if (vm.stale && vm.busy == null && vm.error == null) StaleNote("The size changed: tap “Apply size” to make the photo again.")
       }
       ErrorText(vm.error)
 

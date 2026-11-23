@@ -74,7 +74,7 @@ object Intake {
     val ownAuthority = context.packageName + ".fileprovider"
     for ((i, u) in uris.take(60).withIndex()) {
       // only other apps' content links: never file:// paths, never our own private files
-      if (u.scheme != "content" || u.authority == null || u.authority == ownAuthority) {
+      if (u.scheme != "content" || u.authority == null || u.authority!!.substringAfterLast('@') == ownAuthority) {
         skipped++
         continue
       }

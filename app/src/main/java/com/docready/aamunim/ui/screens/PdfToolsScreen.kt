@@ -110,6 +110,7 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
   /** The one PDF added, while its pages are as they came (compress may then keep it as it is) */
   private var singlePdf: File? = null
   private var filesAdded = 0
+  private var lastMakeNote: String? = null
   private var pagesChanged = false
 
   // NID: both sides of the card
@@ -137,6 +138,9 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
       busy = "Opening the files…"
       error = null
       result = null
+      // a file that cannot be opened must not count: restored on failure
+      val filesBefore = filesAdded
+      val singleBefore = singlePdf
       try {
         val added = withContext(Dispatchers.IO) {
           val out = mutableListOf<PdfPage>()
@@ -170,6 +174,8 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
           }
         }
       } catch (e: Throwable) {
+        filesAdded = filesBefore
+        singlePdf = singleBefore
         error = messageOf(e, "The file could not be opened.")
       } finally {
         busy = null
@@ -198,6 +204,7 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
     firstName = null
     singlePdf = null
     filesAdded = 0
+    lastMakeNote = null
     pagesChanged = false
     front = null
     back = null
@@ -312,7 +319,12 @@ class PdfToolsViewModel(app: Application) : AndroidViewModel(app) {
               fits = ok
             }
           }
-          notesOut?.let { n -> withContext(Dispatchers.Main) { notes.add(n) } }
+          withContext(Dispatchers.Main) {
+            // only the latest run's "kept as it was" note is shown
+            lastMakeNote?.let { notes.remove(it) }
+            lastMakeNote = notesOut
+            notesOut?.let { n -> notes.add(n) }
+          }
           FilesResult(
             listOf(ReadyFile(out, name, "application/pdf")),
             DocTools.thumbnail(sourcePages[0], 600)?.asImageBitmap(),
