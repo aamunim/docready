@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only the folders whose files are handed to other apps -->
+<paths>
+    <!-- the camera app writes the photo here (ImageSource) -->
+    <cache-path name="camera" path="camera/" />
+    <!-- ready files, for Share (FileNames.outputFile) -->
+    <cache-path name="out" path="out/" />
+    <!-- Android 8-9: files saved on the phone (PhoneSaveTarget) -->
+    <external-files-path name="saved" path="Download/DocReady/" />
+    <files-path name="saved_internal" path="Downloads/DocReady/" />
+</paths>
