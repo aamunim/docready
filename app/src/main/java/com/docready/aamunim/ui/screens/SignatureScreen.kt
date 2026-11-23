@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -278,10 +279,18 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
     private set
   private var inkRatio = 0.3f
 
-  /** The form's pages (pictures; a PDF's pages rendered) */
-  val formPages = mutableStateListOf<File>()
+  /** The form: a photo, or a PDF whose pages are rendered one at a time when shown */
+  private var formSource: File? = null
+  private var formIsPdf = false
+
+  /** The form's pages (a photo: 1; a PDF: up to [PdfTools.PAGE_LIMIT]) */
+  var formCount by mutableStateOf(0)
+    private set
   var formIndex by mutableStateOf(0)
     private set
+
+  /** The page shown, as a picture file (the signature is drawn on it) */
+  private var formPageFile: File? = null
   var formImage by mutableStateOf<ImageBitmap?>(null)
     private set
   private var formW = 1
@@ -327,19 +336,23 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
       busy = "Opening the page…"
       error = null
       try {
-        val files = withContext(Dispatchers.IO) {
+        val (file, pdf, count) = withContext(Dispatchers.IO) {
           val type = ctx.contentResolver.getType(uri) ?: ""
           val name = FileNames.displayName(ctx, uri)?.lowercase() ?: ""
           if (type == "application/pdf" || name.endsWith(".pdf")) {
-            PdfTools.render(ctx, FileNames.copyIn(ctx, uri, "pdf"), maxSide = 2000, maxPages = 30).pages
+            val f = FileNames.copyIn(ctx, uri, "pdf")
+            Triple(f, true, PdfTools.pageCount(f))
           } else {
-            listOf(FileNames.copyIn(ctx, uri, "img"))
+            Triple(FileNames.copyIn(ctx, uri, "img"), false, 1)
           }
         }
-        if (files.isEmpty()) throw IllegalStateException("This PDF has no pages.")
-        formPages.clear()
-        formPages.addAll(files)
-        showFormPage(0)
+        if (count == 0) throw IllegalStateException("This PDF has no pages.")
+        if (count > PdfTools.PAGE_LIMIT) error = "This PDF has $count pages: only the first ${PdfTools.PAGE_LIMIT} can be used."
+        formSource = file
+        formIsPdf = pdf
+        formCount = minOf(count, PdfTools.PAGE_LIMIT)
+        // (in this coroutine: busy stays on until the first page is shown)
+        loadFormPage(0)
       } catch (e: Throwable) {
         error = messageOf(e, "The page could not be opened.")
       } finally {
@@ -348,25 +361,60 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
     }
   }
 
+  /** The latest page asked for: an older render that finishes later is thrown away */
+  private var formRequest = 0
+
   fun showFormPage(index: Int) {
-    val f = formPages.getOrNull(index) ?: return
-    viewModelScope.launch {
-      try {
-        val b = withContext(Dispatchers.Default) { DocTools.load(ctx, Uri.fromFile(f), 1400) }
-        formW = b.width
-        formH = b.height
-        formIndex = index
-        formImage = b.asImageBitmap()
-        placeBoxState = startBox()
-        placeResult = null
-      } catch (e: Throwable) {
-        error = messageOf(e, "The page could not be opened.")
+    viewModelScope.launch { loadFormPage(index) }
+  }
+
+  private suspend fun loadFormPage(index: Int) {
+    val src = formSource ?: return
+    if (index !in 0 until formCount) return
+    val pdf = formIsPdf
+    val my = ++formRequest
+    busy = "Opening page ${index + 1}…"
+    try {
+      val (file, b) = withContext(Dispatchers.Default) {
+        // a PDF page is made only when it is shown
+        val f = if (pdf) {
+          val page = PdfTools.renderPage(src, index, 2000)
+          try {
+            DocTools.save(ctx, DocTools.jpeg(page, 92), "jpg")
+          } finally {
+            page.recycle()
+          }
+        } else {
+          src
+        }
+        f to DocTools.load(ctx, Uri.fromFile(f), 1400)
       }
+      if (my != formRequest || formSource !== src) {
+        if (file !== src) file.delete() // a newer page was asked for meanwhile
+        return
+      }
+      // the page shown before is no longer needed (one page file at a time)
+      formPageFile?.let { old -> if (old != src && old != file) old.delete() }
+      formPageFile = file
+      formW = b.width
+      formH = b.height
+      formIndex = index
+      formImage = b.asImageBitmap()
+      placeBoxState = startBox()
+      placeResult = null
+    } catch (e: Throwable) {
+      if (my == formRequest) error = messageOf(e, "The page could not be opened.")
+    } finally {
+      if (my == formRequest) busy = null
     }
   }
 
   fun closeForm() {
-    formPages.clear()
+    formRequest++
+    formPageFile?.let { if (formIsPdf) it.delete() }
+    formSource = null
+    formPageFile = null
+    formCount = 0
     formImage = null
     placeResult = null
   }
@@ -374,7 +422,7 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
   /** The page with the signature drawn into its box, as a JPG or a one-page PDF */
   fun makePage() {
     val signature = ink ?: return
-    val f = formPages.getOrNull(formIndex) ?: return
+    val f = formPageFile ?: return
     val kb = placeMaxKbText.toIntOrNull()
     if (kb != null && kb !in 10..50_000) {
       error = "Max KB: 10 to 50000 (or leave it empty for no limit)."
@@ -565,8 +613,12 @@ private fun PlaceOnPage(vm: SignatureViewModel, choosePage: () -> Unit, savePage
     OutlinedButton(onClick = choosePage, enabled = vm.busy == null) { Text("Choose the page (photo or PDF)") }
     return
   }
-  if (vm.formPages.size > 1) {
-    ChoiceChips(vm.formPages.indices.toList(), vm.formIndex, { "Page ${it + 1}" }, { vm.showFormPage(it) })
+  if (vm.formCount > 1) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      TextButton(onClick = { vm.showFormPage(vm.formIndex - 1) }, enabled = vm.busy == null && vm.formIndex > 0) { Text("‹ Previous") }
+      Text("Page ${vm.formIndex + 1} of ${vm.formCount}", modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+      TextButton(onClick = { vm.showFormPage(vm.formIndex + 1) }, enabled = vm.busy == null && vm.formIndex < vm.formCount - 1) { Text("Next ›") }
+    }
     VSpace(8)
   }
   Text(

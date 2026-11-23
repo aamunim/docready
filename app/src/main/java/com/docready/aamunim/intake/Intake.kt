@@ -15,7 +15,7 @@ data class IncomingFile(val file: File, val name: String, val mime: String) {
   val isPdf: Boolean get() = mime == "application/pdf"
 }
 
-enum class IntakeTarget { PHOTO, SIGNATURE, PDF_TOOLS }
+enum class IntakeTarget { PHOTO, SIGNATURE, PDF_TOOLS, SPLIT }
 
 /** Files shared to the app, waiting for a screen to take them; [target] null = not decided yet */
 data class IntakeRequest(val files: List<IncomingFile>, val skipped: Int, val target: IntakeTarget?)
@@ -37,11 +37,9 @@ object Intake {
 
   fun offer(files: List<IncomingFile>, skipped: Int) {
     if (files.isEmpty() && skipped == 0) return
-    val target = when {
-      files.isEmpty() -> null
-      files.size == 1 && !files[0].isPdf -> null // one photo: the user picks what to make
-      else -> IntakeTarget.PDF_TOOLS
-    }
+    // the user always picks: one photo (Photo / Signature / PDF tools), a PDF or several files
+    // (Split by preset / PDF tools)
+    val target: IntakeTarget? = null
     _request.value = IntakeRequest(files, skipped, target)
   }
 
