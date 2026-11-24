@@ -14,6 +14,9 @@ mlkitFace = "17.1.0"
 mlkitSubjectSegmentation = "16.0.0-beta1"
 # the Latin text model inside the app (no download: the app has no network permission)
 mlkitTextRecognition = "16.0.1"
+# QR codes: made and read from pictures by ZXing (plain Java); the camera scan by Play services
+zxing = "3.5.3"
+codeScanner = "16.1.0"
 
 # build
 compileSdk = "36"
@@ -39,6 +42,8 @@ mlkit-document-scanner = { module = "com.google.android.gms:play-services-mlkit-
 mlkit-face-detection = { module = "com.google.android.gms:play-services-mlkit-face-detection", version.ref = "mlkitFace" }
 mlkit-subject-segmentation = { module = "com.google.android.gms:play-services-mlkit-subject-segmentation", version.ref = "mlkitSubjectSegmentation" }
 mlkit-text-recognition = { module = "com.google.mlkit:text-recognition", version.ref = "mlkitTextRecognition" }
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
+code-scanner = { module = "com.google.android.gms:play-services-code-scanner", version.ref = "codeScanner" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

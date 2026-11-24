@@ -48,6 +48,25 @@ class PresetRepository(context: Context) {
     return save(src.copy(id = newId(), name = "${src.name} (copy)".take(60)))
   }
 
+  /** A checked preset (from a QR code) kept as a new preset of this user */
+  fun addNew(p: Preset): Preset = save(p.copy(id = newId()))
+
+  /** A checked preset put in the place of an existing one (its id kept) */
+  fun replace(existingId: String, p: Preset): Preset = save(p.copy(id = existingId))
+
+  /** A preset already named so (any case), or null */
+  fun named(name: String): Preset? = _presets.value.firstOrNull { it.name.trim().equals(name.trim(), ignoreCase = true) }
+
+  /** "B.Ed (2)", "B.Ed (3)"…: a name no preset has yet */
+  fun freeName(name: String): String {
+    var n = 2
+    while (true) {
+      val candidate = "${name.take(54)} ($n)"
+      if (named(candidate) == null) return candidate
+      n++
+    }
+  }
+
   /** A preset from a shared file, checked strictly, saved as a new preset of this user */
   fun import(file: File): Preset = save(PresetCodec.read(file).copy(id = newId()))
 
@@ -116,13 +135,32 @@ object PresetCodec {
     return out
   }
 
+  /** Compact (one line, defaults left out, item ids left out): for QR codes */
+  private val compact = Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = false
+  }
+
+  /** The preset as compact JSON in the shared file's format (the same checks read it back) */
+  fun encodeCompact(preset: Preset): String =
+    compact.encodeToString(PresetFile.serializer(), PresetFile(FORMAT, 1, SharedPreset(preset.name, preset.items.map { it.copy(id = "") })))
+
   fun read(file: File): Preset {
     if (!file.exists() || file.length() == 0L) throw IllegalArgumentException("The file is empty.")
     if (file.length() > MAX_BYTES) throw IllegalArgumentException("This file is too big to be a DocReady preset.")
+    return readText(file.readText())
+  }
+
+  /**
+   * A preset from its JSON (a file or a QR code), checked strictly: a bad document only gives
+   * a clear message (IllegalArgumentException), never a crash
+   */
+  fun readText(text: String): Preset {
+    if (text.length > MAX_BYTES) throw IllegalArgumentException("This is too big to be a DocReady preset.")
     val doc = try {
-      strict.decodeFromString(PresetFile.serializer(), file.readText())
+      strict.decodeFromString(PresetFile.serializer(), text)
     } catch (_: Exception) {
-      throw IllegalArgumentException("This is not a DocReady preset file.")
+      throw IllegalArgumentException("This is not a DocReady preset.")
     }
     if (doc.format != FORMAT) throw IllegalArgumentException("This is not a DocReady preset file.")
     if (doc.version != 1) throw IllegalArgumentException("This preset was made by a newer DocReady: update the app first.")

@@ -112,6 +112,10 @@ dependencies {
     implementation(libs.mlkit.subject.segmentation)
     // OCR, English (Latin script): the bundled model, so it works offline from the first start
     implementation(libs.mlkit.text.recognition)
+    // presets as QR codes: ZXing makes them and reads them from pictures (plain Java, offline);
+    // the camera scan is Google's code scanner (its own screen: no camera permission in the app)
+    implementation(libs.zxing.core)
+    implementation(libs.code.scanner)
 
     // plain JVM tests of the pure-Kotlin parts (./gradlew test); nothing of it goes in the app
     testImplementation(libs.junit)
