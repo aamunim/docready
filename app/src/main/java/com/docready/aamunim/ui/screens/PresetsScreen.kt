@@ -28,6 +28,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
@@ -141,7 +144,7 @@ private fun rememberPresetImport(onImported: (Preset) -> Unit): () -> Unit {
 }
 
 @Composable
-fun PresetsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Unit) {
+fun PresetsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Unit, onScanQr: () -> Unit = {}) {
   val repo = LocalContext.current.docReady.presets
   val presets by repo.presets.collectAsState()
   var query by rememberSaveable { mutableStateOf("") }
@@ -150,6 +153,7 @@ fun PresetsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Uni
   Scaffold(
     topBar = {
       DocTopBar("Presets", onBack, actions = {
+        TextButton(onClick = onScanQr) { Text("Scan QR") }
         TextButton(onClick = import) { Text("Import") }
         if (presets.isNotEmpty()) TextButton(onClick = onNew) { Text("+ New") }
       })
@@ -175,9 +179,11 @@ fun PresetsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Uni
         Button(onClick = onNew, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Create your first preset") }
         Text("or", modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         OutlinedButton(onClick = import, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Import a preset someone sent you") }
+        VSpace(8)
+        OutlinedButton(onClick = onScanQr, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Scan a preset's QR code") }
         VSpace(24)
         Text(
-          "Later, on each preset: Edit · Duplicate · Share (WhatsApp, file) · Delete",
+          "Later, on each preset: Edit · Duplicate · Share (file or QR code) · Delete",
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           textAlign = TextAlign.Center,
@@ -283,9 +289,11 @@ fun PresetDetailScreen(
   onBack: () -> Unit,
   onMake: (Preset, Int) -> Unit,
   onEdit: (String) -> Unit,
+  onShowQr: (String) -> Unit = {},
 ) {
   val context = LocalContext.current
   val repo = context.docReady.presets
+  var shareMenu by remember { mutableStateOf(false) }
   val presets by repo.presets.collectAsState()
   val preset = presets.firstOrNull { it.id == id }
   var confirmDelete by remember { mutableStateOf(false) }
@@ -296,7 +304,19 @@ fun PresetDetailScreen(
         onBack,
         actions = {
           if (preset != null) {
-            IconButton(onClick = { sharePreset(context, preset) }) { Icon(AppIcons.Share, contentDescription = "Share preset") }
+            Box {
+              IconButton(onClick = { shareMenu = true }) { Icon(AppIcons.Share, contentDescription = "Share preset") }
+              DropdownMenu(expanded = shareMenu, onDismissRequest = { shareMenu = false }) {
+                DropdownMenuItem(text = { Text("Send as a file") }, onClick = {
+                  shareMenu = false
+                  sharePreset(context, preset)
+                })
+                DropdownMenuItem(text = { Text("Show QR") }, onClick = {
+                  shareMenu = false
+                  onShowQr(preset.id)
+                })
+              }
+            }
             IconButton(onClick = { repo.duplicate(preset.id)?.let { onEdit(it.id) } }) { Icon(AppIcons.Copy, contentDescription = "Duplicate") }
             IconButton(onClick = { onEdit(preset.id) }) { Icon(AppIcons.Edit, contentDescription = "Edit") }
             IconButton(onClick = { confirmDelete = true }) { Icon(AppIcons.Delete, contentDescription = "Delete") }

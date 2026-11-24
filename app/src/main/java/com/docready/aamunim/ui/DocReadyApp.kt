@@ -28,6 +28,8 @@ import com.docready.aamunim.ui.screens.PdfToolsScreen
 import com.docready.aamunim.ui.screens.PhotoScreen
 import com.docready.aamunim.ui.screens.PresetDetailScreen
 import com.docready.aamunim.ui.screens.PresetEditScreen
+import com.docready.aamunim.ui.screens.PresetQrImportScreen
+import com.docready.aamunim.ui.screens.PresetQrScreen
 import com.docready.aamunim.ui.screens.PresetsScreen
 import com.docready.aamunim.ui.screens.ScanScreen
 import com.docready.aamunim.ui.screens.SignatureScreen
@@ -53,6 +55,10 @@ object Routes {
   const val ACCOUNTS = "accounts"
   const val FILE_NAMES = "file-names"
   const val FOLDER = "folder/{name}"
+  const val PRESET_QR = "preset-qr/{id}"
+  const val PRESET_QR_SCAN = "preset-qr-scan"
+
+  fun presetQr(id: String) = "preset-qr/${Uri.encode(id)}"
 
   /** A tool, optionally for a preset's item and a student (the result is added to them) */
   fun tool(base: String, presetId: String? = null, item: Int = -1, student: String? = null, draft: Boolean = false): String {
@@ -185,7 +191,15 @@ fun DocReadyApp() {
         onBack = back,
         onOpen = { nav.navigate(Routes.preset(it)) },
         onNew = { nav.navigate(Routes.presetEdit("new")) },
+        onScanQr = { nav.navigate(Routes.PRESET_QR_SCAN) },
       )
+    }
+    composable(Routes.PRESET_QR) { entry -> PresetQrScreen(entry.arguments?.getString("id") ?: "", back) }
+    composable(Routes.PRESET_QR_SCAN) {
+      PresetQrImportScreen(back, onImported = { id ->
+        nav.popBackStack()
+        nav.navigate(Routes.preset(id))
+      })
     }
     composable(Routes.PRESET) { entry ->
       PresetDetailScreen(
@@ -200,6 +214,7 @@ fun DocReadyApp() {
           nav.navigate(Routes.tool(base, preset.id, i))
         },
         onEdit = { nav.navigate(Routes.presetEdit(it)) },
+        onShowQr = { nav.navigate(Routes.presetQr(it)) },
       )
     }
     composable(Routes.PRESET_EDIT) { entry ->

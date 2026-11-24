@@ -75,6 +75,11 @@ phone, with no sign-in:
   without a tap. Learned words stay on the phone.
 - **Duplicate pages** (Scan, PDF tools, Split): a page that looks like an earlier one is marked
   "Looks like page N"; "Remove duplicates" asks first and can be undone.
+- **Preset QR codes**: a preset → Share → Show QR (black on white; a big preset in parts,
+  "1 of 3", swipe or play them in turn; Save QR image to Downloads). Presets → Scan QR reads
+  them with Google's code scanner (no camera permission) or from a picture, parts in any order,
+  shows the preset before Import, and asks Replace / Keep both on a name already used. The code
+  holds `DR1:<part>/<parts>:<check>:<Base45 of the deflated preset JSON>`.
 - **Check size** (Home): any photo or PDF → KB, pages or pixels; give a KB limit and Fix to fit
   (optionally keeping the pixel size), then save or share.
 - **Share to / Open with DocReady**: photos and PDFs shared or opened from other apps open
