@@ -112,4 +112,7 @@ dependencies {
     implementation(libs.mlkit.subject.segmentation)
     // OCR, English (Latin script): the bundled model, so it works offline from the first start
     implementation(libs.mlkit.text.recognition)
+
+    // plain JVM tests of the pure-Kotlin parts (./gradlew test); nothing of it goes in the app
+    testImplementation(libs.junit)
 }

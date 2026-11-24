@@ -392,11 +392,18 @@ class PdfToolsViewModel(
   }
 
   /** Pages that look like an earlier page (the same paper added twice) */
-  val duplicates = Duplicates(viewModelScope, pages, { it.thumb }) {
-    pagesChanged = true
-    result = null
-    split.onPagesChanged(pages)
-  }
+  val duplicates = Duplicates(
+    viewModelScope,
+    pages,
+    { it.thumb },
+    changed = {
+      pagesChanged = true
+      result = null
+      split.onPagesChanged(pages)
+    },
+    // Undo gives the pages back their items and cuts in Split by preset
+    keep = { gone -> split.keepFor(gone) },
+  )
 
   fun move(index: Int, by: Int) {
     val to = index + by

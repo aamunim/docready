@@ -781,8 +781,9 @@ object DocTools {
     var k = 1.0f
     // (a searchable PDF's text layer: about 60 bytes a word, counted against the limit)
     val textBytes = words?.sumOf { it.size * 60L + 20 } ?: 0L
-    val overhead = 600L * pages.size + 400 + textBytes
+    var overhead = 600L * pages.size + 400 + textBytes
     val longest = pages.maxOf { longSideOf(it) }
+    var measured = false
     while (true) {
       val factor = k
       val totals = HashMap<Int, Long>()
@@ -793,6 +794,14 @@ object DocTools {
       if (ok || longest * factor <= 1170f) {
         val size = FileOutputStream(dest).buffered().use { s ->
           writePdf(s, pages.size, searchable = words != null) { i -> encodePage(pages[i], q, factor, words?.getOrNull(i) ?: emptyList()) }
+        }
+        val pictures = totals[q]
+        if (ok && maxBytes != null && size > maxBytes && !measured && pictures != null) {
+          // the estimate of the PDF's own weight (the text layer above all) was low: once more,
+          // with the real weight around the pictures as written
+          measured = true
+          overhead = size - pictures + 256
+          continue
         }
         return Triple(size, q, ok && (maxBytes == null || size <= maxBytes))
       }

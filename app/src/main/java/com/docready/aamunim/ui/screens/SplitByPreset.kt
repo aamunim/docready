@@ -183,7 +183,6 @@ class SplitState(
       assigned[page] = target
       suggested.remove(page)
     }
-    learn(selected.toList(), p.items[target])
     selected.clear()
     dropCrop(target) // the item's first page may have changed
     results = null
@@ -293,7 +292,11 @@ class SplitState(
    */
   private fun choose(look: PageLook, p: Preset): Int? {
     val items = p.items
-    if (look.faceShare >= 0.02f && look.words < 30) {
+    // a face alone is not enough (an NID card or a form has one): a large face on a page with
+    // little ink of text (Bangla text is not read, so the ink tells), or a page that is mostly photo
+    val bigFace = look.faceShare >= 0.10f && look.words < 30 && look.ink.darkShare < 0.06f
+    val mostlyPhoto = look.faceShare >= 0.05f && look.ink.midShare >= 0.5f && look.words < 15
+    if (bigFace || mostlyPhoto) {
       items.indexOfFirst { it.kind == ItemKind.PHOTO }.takeIf { it >= 0 }?.let { return it }
     }
     if (look.faceShare == 0f && look.ink.looksLikeSignature(look.words)) {
@@ -316,7 +319,6 @@ class SplitState(
     selected.remove(page)
     dropCrop(i)
     results = null
-    learn(listOf(page), p.items[i])
   }
 
   fun reject(page: PdfPage) {
@@ -330,9 +332,15 @@ class SplitState(
 
   private val learned = ctx.docReady.learned
 
-  /** The pages' words counted for the item (pages not looked at yet teach nothing) */
+  /** (page, item id) already learned in this split: making the files again teaches nothing new */
+  private val taught = HashSet<Pair<PdfPage, String>>()
+
+  /**
+   * The pages' words counted for the item: only when its files are made (a page given by
+   * mistake and moved before that teaches nothing). Pages not looked at yet teach nothing.
+   */
   private fun learn(pages: List<PdfPage>, item: PresetItem) {
-    val words = pages.mapNotNull { looks[it]?.top }
+    val words = pages.filter { taught.add(it to item.id) }.mapNotNull { looks[it]?.top }
     if (words.isEmpty() || item.id.isEmpty()) return
     scope.launch(Dispatchers.IO) { for (w in words) learned.learn(item.id, w) }
   }
@@ -341,6 +349,36 @@ class SplitState(
   fun onRecipesChanged(changed: Collection<PdfPage>) {
     for (page in changed) assigned[page]?.let { dropCrop(it) }
     if (changed.isNotEmpty()) results = null
+    // an edited page may look different now (turned, cropped): looked at again
+    for (page in changed) {
+      looks.remove(page)
+      suggested.remove(page)
+      taught.removeAll { it.first === page }
+    }
+    if (changed.isNotEmpty() && preset != null) suggest()
+  }
+
+  /**
+   * Before [pages] are removed (Remove duplicates): how to give them back their items and cuts
+   * (Undo), to be run once they are back in the list
+   */
+  fun keepFor(pages: List<PdfPage>): () -> Unit {
+    val given = pages.mapNotNull { p -> assigned[p]?.let { p to it } }
+    val cuts = crops.toMap()
+    val cutPages = cropPages.toMap()
+    val wasSuggested = pages.mapNotNull { p -> suggested[p]?.let { p to it } }
+    return {
+      for ((p, i) in given) assigned[p] = i
+      for ((i, box) in cuts) {
+        val on = cutPages[i] ?: continue
+        if (crops[i] == null && assigned[on] == i) {
+          crops[i] = box
+          cropPages[i] = on
+        }
+      }
+      for ((p, i) in wasSuggested) if (p !in assigned) suggested[p] = i
+      results = null
+    }
   }
 
   /** A page as it will be used: made from its source with its edits, its longer side at most [maxSide] */
@@ -464,6 +502,8 @@ class SplitState(
             }
           }
         }
+        // the files are made: what each item's pages say is learned (once per page and item)
+        p.items.forEachIndexed { i, item -> learn(plan[i], item) }
       } catch (e: Throwable) {
         error = messageOf(e, "The files could not be made.")
       } finally {

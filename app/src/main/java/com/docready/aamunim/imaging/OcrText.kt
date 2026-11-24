@@ -95,35 +95,51 @@ object PageFacts {
       "|[0-9]{1,2}(?:st|nd|rd|th)?\\s+[A-Za-z]{3,9}\\.?,?\\s+[0-9]{4}" +
       "|[A-Za-z]{3,9}\\.?\\s+[0-9]{1,2}(?:st|nd|rd|th)?,?\\s+[0-9]{4})",
   )
-  private val name = Regex(
-    "(?i)(?:^|[^A-Za-z'’])(?:Name\\s+of\\s+(?:the\\s+)?(?:Candidate|Student|Examinee|Applicant)|" +
-      "(?:Candidate|Student|Examinee|Applicant)['’]?s?\\s+Name|Name)$SEP" +
-      "([A-Za-z][A-Za-z.'’ ]{1,48}[A-Za-z.])",
+  private const val VALUE = "([A-Za-z][A-Za-z.'’ ]{1,48}[A-Za-z.])"
+
+  /** The applicant's own name, said so: "Name of the Candidate", "Student's Name"… (preferred) */
+  private val ownName = Regex(
+    "(?i)(?:Name\\s+of\\s+(?:the\\s+)?(?:Candidate|Student|Examinee|Applicant)|" +
+      "(?:Candidate|Student|Examinee|Applicant)['’]?s?\\s+Name)$SEP$VALUE",
   )
 
-  /** Lines about someone else's name (a parent, the school…) are never offered as the name */
-  private val notTheirs = Regex("(?i)father|mother|guardian|husband|school|college|institut|board|centre|center|parent|spouse|signature")
+  /** Just "Name": used only when no line says whose name it is */
+  private val bareName = Regex("(?i)(?:^|[^A-Za-z'’])Name$SEP$VALUE")
+
+  /** Lines where a bare "Name" is the name of something else (the exam, a post, the school…) */
+  private val notTheirs = Regex(
+    "(?i)father|mother|guardian|husband|parent|spouse|wife|school|college|institut|board|centre|center|" +
+      "signature|exam|post|subject|bank|branch|course|degree|university|company|organi[sz]ation|office",
+  )
 
   /** Words a name read from a form never is (labels running on after it) */
-  private val nameStop = Regex("(?i)\\s+(?:roll|reg|registration|father|mother|date|dob|class|group|session|sex|gender|id|no)\\b.*$")
+  private val nameStop = Regex("(?i)\\s+(?:roll|reg|registration|father|mother|guardian|husband|date|dob|class|group|session|sex|gender|id|no|name)\\b.*$")
 
   /** The facts found in [text] (at most one of each kind: the first found), in kind order */
   fun find(text: String): List<Fact> {
     val out = LinkedHashMap<FactKind, String>()
-    for (raw in text.lines()) {
-      val line = raw.trim()
-      if (line.isEmpty()) continue
+    val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
+    for (line in lines) {
       if (FactKind.ROLL !in out) roll.find(line)?.let { out[FactKind.ROLL] = it.groupValues[1].replace(" ", "") }
       if (FactKind.REG !in out) reg.find(line)?.let { out[FactKind.REG] = it.groupValues[1].replace(" ", "") }
       if (FactKind.DOB !in out) dob.find(line)?.let { out[FactKind.DOB] = it.groupValues[1].replace(Regex("\\s+"), " ").trim() }
-      if (FactKind.NAME !in out && !notTheirs.containsMatchIn(line)) {
-        name.find(line)?.let { m ->
-          val v = m.groupValues[1].replace(nameStop, "").trim().trimEnd('.').trim()
-          if (v.length >= 3 && v.any { it.isLetter() }) out[FactKind.NAME] = titleCase(v)
-        }
-      }
     }
+    // the name: a line saying it is the applicant's first; a bare "Name" only if none does
+    // (a parent's name later on the same line is cut off by the labels that follow the name)
+    val own = lines.asSequence().mapNotNull { nameIn(ownName, it) }.firstOrNull()
+    val bare = own ?: lines.asSequence().filter { !notTheirs.containsMatchIn(it) }.mapNotNull { nameIn(bareName, it) }.firstOrNull()
+    bare?.let { out[FactKind.NAME] = it }
     return FactKind.entries.mapNotNull { k -> out[k]?.let { Fact(k, it) } }
+  }
+
+  /** The name after the label, cleaned; null for "of Examination…" or nothing name-like */
+  private fun nameIn(r: Regex, line: String): String? {
+    for (m in r.findAll(line)) {
+      val v = m.groupValues[1].replace(nameStop, "").trim().trimEnd('.').trim()
+      if (v.startsWith("of ", ignoreCase = true) || v.equals("of", ignoreCase = true)) continue
+      if (v.length >= 3 && v.count { it.isLetter() } >= 3) return titleCase(v)
+    }
+    return null
   }
 
   /** "RAHIM UDDIN" → "Rahim Uddin" (names on certificates are often in capitals) */
@@ -218,7 +234,7 @@ object PageHash {
  * The shape of the ink on a page (grey picture): how much is dark, and how much of the page its
  * box covers (a few outlying dots left out). A signature: a little ink in one small area.
  */
-data class InkShape(val darkShare: Float, val boxShare: Float) {
+data class InkShape(val darkShare: Float, val boxShare: Float, val midShare: Float = 0f) {
   /** Mostly white with one cluster of dark strokes, and almost no words */
   fun looksLikeSignature(words: Int): Boolean = words <= 6 && darkShare in 0.001f..0.08f && boxShare < 0.35f
 
@@ -244,13 +260,15 @@ data class InkShape(val darkShare: Float, val boxShare: Float) {
         xs.add(x)
         ys.add(y)
       }
-      if (xs.isEmpty()) return InkShape(0f, 0f)
+      // photo tones: neither paper nor ink
+      val mid = lum.count { it in dark..(paper * 0.85).toInt() }.toFloat() / lum.size
+      if (xs.isEmpty()) return InkShape(0f, 0f, mid)
       xs.sort()
       ys.sort()
       fun at(l: List<Int>, q: Double) = l[min(l.size - 1, (l.size * q).toInt())]
       val bw = at(xs, 0.98) - at(xs, 0.02) + 1
       val bh = at(ys, 0.98) - at(ys, 0.02) + 1
-      return InkShape(xs.size.toFloat() / (w * h), bw.toFloat() * bh / (w * h))
+      return InkShape(xs.size.toFloat() / (w * h), bw.toFloat() * bh / (w * h), mid)
     }
   }
 }

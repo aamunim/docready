@@ -301,7 +301,7 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
   }
 
   /** Pages that look like an earlier page (the same paper scanned twice) */
-  val duplicates = Duplicates(viewModelScope, pages, { it.thumb }) { result = null }
+  val duplicates = Duplicates(viewModelScope, pages, { it.thumb }, changed = { result = null })
 
   fun make() {
     val kb = maxKbText.toIntOrNull()

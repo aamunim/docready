@@ -42,6 +42,11 @@ class Duplicates<T : Any>(
   private val pages: SnapshotStateList<T>,
   private val thumb: (T) -> ImageBitmap?,
   private val changed: () -> Unit,
+  /**
+   * Called before pages are removed: what else to keep about them (a split's items and cuts),
+   * as a step run after Undo has put them back
+   */
+  private val keep: (List<T>) -> (() -> Unit) = { {} },
 ) {
   private val hashes = mutableStateMapOf<T, PageHash.Hash>()
 
@@ -65,11 +70,13 @@ class Duplicates<T : Any>(
   /** The pages last removed with their places, for Undo (null: nothing to undo) */
   var removed by mutableStateOf<List<Pair<Int, T>>?>(null)
     private set
+  private var restore: () -> Unit = {}
 
   fun removeAll() {
     val same = sameAs
     val gone = pages.indices.filter { same[it] != null }.map { it to pages[it] }
     if (gone.isEmpty()) return
+    restore = keep(gone.map { it.second })
     for ((i, _) in gone.asReversed()) pages.removeAt(i)
     removed = gone
     changed()
@@ -80,11 +87,15 @@ class Duplicates<T : Any>(
     for ((i, p) in back) pages.add(minOf(i, pages.size), p)
     removed = null
     changed()
+    // (after the list's own clean-up, which forgets what removed pages had)
+    restore()
+    restore = {}
   }
 
   /** The list changed in another way: Undo would put pages back in the wrong places */
   fun forgetUndo() {
     removed = null
+    restore = {}
   }
 
   private fun hashOf(b: ImageBitmap): PageHash.Hash {
