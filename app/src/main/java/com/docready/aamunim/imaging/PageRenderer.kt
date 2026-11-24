@@ -11,6 +11,8 @@ import android.graphics.Path
 import com.docready.aamunim.data.model.CropRect
 import com.docready.aamunim.data.model.Look
 import com.docready.aamunim.data.model.PageRecipe
+import com.docready.aamunim.imaging.beauty.FBox
+import com.docready.aamunim.imaging.beauty.Fingers
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -53,8 +55,34 @@ object PageRenderer {
     return b
   }
 
-  /** After the geometry: the crop box, shadows / look / light, then erasing */
-  fun finish(geo: Bitmap, r: PageRecipe): Bitmap = erase(look(cropped(geo, r.crop), r), r)
+  /** After the geometry: the crop box, fingers out, shadows / look / light, then erasing */
+  fun finish(geo: Bitmap, r: PageRecipe): Bitmap = erase(look(fingers(cropped(geo, r.crop), r), r), r)
+
+  /** Fingers painted out (found on a ≤ 1000 px copy of the framed page, the mask scaled to it) */
+  private fun fingers(b: Bitmap, r: PageRecipe): Bitmap = if (r.fingers) Beautifier.removeFingers(b) else b
+
+  /**
+   * The fingers on a page as it will be framed (corners, turns, crop), as parts of it: empty when
+   * there are none, or when one touches a face (a portrait photo is skin too: never painted
+   * over). Uses up [src]. Blocking (the face finder is awaited).
+   */
+  fun findFingers(src: Bitmap, r: PageRecipe): List<FBox> {
+    val page = cropped(geometry(src, r.copy(fingers = false), maxSide = Fingers.SIDE), r.crop)
+    try {
+      val found = Fingers.find(Beautifier.toPx(page))?.boxes ?: return emptyList()
+      val faces = try {
+        DocPhoto.faces(page).map { f ->
+          FBox(f.box.left / page.width, f.box.top / page.height, f.box.right / page.width, f.box.bottom / page.height)
+        }
+      } catch (_: Exception) {
+        emptyList()
+      }
+      val touchesFace = found.any { b -> faces.any { f -> b.left < f.right && f.left < b.right && b.top < f.bottom && f.top < b.bottom } }
+      return if (touchesFace) emptyList() else found
+    } finally {
+      page.recycle()
+    }
+  }
 
   /** A few degrees of rotation around the middle, the same size, white in the corners */
   fun rotateFine(src: Bitmap, degrees: Float): Bitmap {

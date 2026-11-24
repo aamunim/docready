@@ -399,7 +399,7 @@ class SplitState(
   private fun recipeOf(page: PdfPage, faceSafe: Boolean): PageRecipe {
     val r = recipes[page] ?: PageRecipe.Plain
     // (Beautify keeps its framing for a face, never its paper clean-up)
-    return if (faceSafe) r.copy(look = Look.ORIGINAL, removeShadows = false, beautify = r.beautify?.pixelsOff()) else r
+    return if (faceSafe) r.copy(look = Look.ORIGINAL, removeShadows = false, beautify = r.beautify?.pixelsOff(), fingers = false) else r
   }
 
   /**

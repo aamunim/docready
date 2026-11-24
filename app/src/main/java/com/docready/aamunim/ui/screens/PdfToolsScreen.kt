@@ -352,8 +352,17 @@ class PdfToolsViewModel(
               // the scanning animation sweeps over the photo while it is cleaned (Magic)
               val raw = withContext(Dispatchers.Default) { DocTools.load(ctx, Uri.fromFile(f), 900).asImageBitmap() }
               anim = ScanAnim(animKey++, raw, null, "Cleaning $name…")
+              // fingers holding the paper: painted out by default where found (never over a face)
+              val start = withContext(Dispatchers.Default) {
+                val found = try {
+                  PageRenderer.findFingers(DocTools.load(ctx, Uri.fromFile(f), 1600), PageRecipe.Document).isNotEmpty()
+                } catch (_: Throwable) {
+                  false
+                }
+                if (found) PageRecipe.Document.copy(fingers = true) else PageRecipe.Document
+              }
               val (shown, cleaned) = withContext(Dispatchers.Default) {
-                val c = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), 900), PageRecipe.Document)
+                val c = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), 900), start)
                 listThumb(c.copy(Bitmap.Config.ARGB_8888, false)) to c.asImageBitmap()
               }
               anim = anim?.copy(after = cleaned, done = true, label = "$name ready")
@@ -361,7 +370,7 @@ class PdfToolsViewModel(
               if (animationsEnabled(ctx) && (items.size <= 3 || index == items.size - 1)) delay(600)
               val page = PdfPage(shown, name, f.length(), f, -1)
               // a photo of paper: shadows removed, colour evened (changeable in the editor)
-              recipes[page] = PageRecipe.Document
+              recipes[page] = start
               pages.add(page)
               filesAdded++
               singlePdf = null

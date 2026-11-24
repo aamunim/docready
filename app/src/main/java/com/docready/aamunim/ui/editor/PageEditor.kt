@@ -79,6 +79,7 @@ import com.docready.aamunim.imaging.BeautyResult
 import com.docready.aamunim.imaging.Beautifier
 import com.docready.aamunim.imaging.DocTools
 import com.docready.aamunim.imaging.PageRenderer
+import com.docready.aamunim.imaging.beauty.FBox
 import com.docready.aamunim.imaging.Ocr
 import com.docready.aamunim.ui.components.TextSheet
 import com.docready.aamunim.ui.components.AppIcons
@@ -135,8 +136,38 @@ class PageEditorState(
     if (t == tab) return
     tab = t
     // the Beautify tab also shows the page without Beautify's clean-up (compare, loupe)
-    if (t == EditorTab.BEAUTIFY) refresh()
+    if (t == EditorTab.BEAUTIFY) {
+      refresh()
+      findFingersHere()
+    }
   }
+
+  // ---- fingers holding the paper (the Beautify tab's "Fingers" switch and its outline)
+  /** Fingers found on this page as it is framed (parts of it); empty = none */
+  var fingerBoxes by mutableStateOf<List<FBox>>(emptyList())
+    private set
+  private var fingerJob: Job? = null
+
+  private fun findFingersHere() {
+    val i = index
+    val src = sourceBmp ?: return
+    val r = recipes[i]
+    fingerJob?.cancel()
+    fingerJob = scope.launch {
+      val found = withContext(Dispatchers.Default) {
+        try {
+          PageRenderer.findFingers(src.copy(Bitmap.Config.ARGB_8888, true), r)
+        } catch (e: CancellationException) {
+          throw e
+        } catch (_: Throwable) {
+          emptyList()
+        }
+      }
+      if (i == index) fingerBoxes = found
+    }
+  }
+
+  fun setFingers(on: Boolean) = update(recipe.copy(fingers = on))
 
   // ---- ✨ Beautify
   /** The page without Beautify's clean-up (same framing), for compare and the loupe */
@@ -214,6 +245,8 @@ class PageEditorState(
     notes = found[i]?.notes ?: emptyList()
     askAngle = found[i]?.askAngle
     beforeBeautify = null
+    fingerJob?.cancel()
+    fingerBoxes = emptyList()
     flags()
     // a render for the page before must never land on this one
     renderVersion++
@@ -231,6 +264,7 @@ class PageEditorState(
         source = b.asImageBitmap()
         error = null
         refresh()
+        if (tab == EditorTab.BEAUTIFY) findFingersHere()
       } catch (e: Throwable) {
         if (my == loadVersion) error = if (e is OutOfMemoryError) "Not enough memory to show this page." else e.message ?: "The page could not be opened."
       } finally {
@@ -262,7 +296,8 @@ class PageEditorState(
           val shownGeo = g.asImageBitmap()
           val before = if (withBefore) {
             // the same framing without Beautify's clean-up
-            PageRenderer.finish(PageRenderer.geometry(src.copy(Bitmap.Config.ARGB_8888, true), r, beautyPixels = false), r).asImageBitmap()
+            // (fingers left in: they are outlined on it)
+            PageRenderer.finish(PageRenderer.geometry(src.copy(Bitmap.Config.ARGB_8888, true), r, beautyPixels = false), r.copy(fingers = false)).asImageBitmap()
           } else {
             null
           }

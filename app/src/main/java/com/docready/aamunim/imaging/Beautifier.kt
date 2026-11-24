@@ -10,6 +10,7 @@ import com.docready.aamunim.data.model.FoldLine
 import com.docready.aamunim.imaging.beauty.BeautyAnalyzer
 import com.docready.aamunim.imaging.beauty.BeautySteps
 import com.docready.aamunim.imaging.beauty.FBox
+import com.docready.aamunim.imaging.beauty.Fingers
 import com.docready.aamunim.imaging.beauty.FoldPx
 import com.docready.aamunim.imaging.beauty.IBox
 import com.docready.aamunim.imaging.beauty.MarkKind
@@ -63,6 +64,9 @@ object Beautifier {
 
   fun magicBw(src: Bitmap): Bitmap = onPx(src) { MagicLooks.magicBw(it) }
 
+  /** Fingers holding the paper painted out with the paper's own colour ([Fingers]) */
+  fun removeFingers(src: Bitmap): Bitmap = onPx(src) { Fingers.remove(it) }
+
   fun lighten(src: Bitmap): Bitmap = onPx(src) { MagicLooks.lighten(it) }
 
   /** "Remove shadows": the paper's light evened by its estimate (hard shadow edges and folds too, no halos) */
@@ -108,7 +112,8 @@ object Beautifier {
       foldLines = f.folds.map { FoldLine(it.first, it.second, it.third) },
       // painted over only once the user has seen them outlined
       edges = false,
-      edgeMarks = f.edges.map { (kind, b) ->
+      // (fingers have their own step, PageRecipe.fingers: found with a mask, filled with the paper)
+      edgeMarks = f.edges.filter { it.first != MarkKind.FINGER }.map { (kind, b) ->
         EdgeMark(
           when (kind) {
             MarkKind.FINGER -> EdgeKind.FINGER
@@ -127,15 +132,16 @@ object Beautifier {
       if (f.trim != null) add("A dark border is outlined: turn on “Trim black border” to cut it away.")
       if (f.folds.isNotEmpty()) add("${f.folds.size} fold line(s) are outlined: turn on “Folds” to flatten them.")
       if (f.glareLoss) add("Glare: some of what is under the shine can't be brought back.")
-      if (f.edges.isNotEmpty()) {
-        val what = f.edges.map { it.first }.distinct().joinToString(", ") {
+      val marks = f.edges.filter { it.first != MarkKind.FINGER }
+      if (marks.isNotEmpty()) {
+        val what = marks.map { it.first }.distinct().joinToString(", ") {
           when (it) {
             MarkKind.FINGER -> "finger"
             MarkKind.HOLE -> "punch hole"
             MarkKind.STAPLE -> "staple"
           }
         }
-        add("${f.edges.size} mark(s) at the edges ($what) are outlined: turn on “Edge marks” to paint them over.")
+        add("${marks.size} mark(s) at the edges ($what) are outlined: turn on “Edge marks” to paint them over.")
       }
     }
     return BeautyResult(recipe, !signature && f.shadow, f.askAngle, notes)

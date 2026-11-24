@@ -203,7 +203,9 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
               null
             }
             // new document pages: Magic (and the paper's corners on a photo)
-            val recipe = PageRecipe.Document.copy(quad = quad?.toList())
+            val framed = PageRecipe.Document.copy(quad = quad?.toList())
+            // fingers holding the paper: painted out by default where found (never over a face)
+            val recipe = if (fingersOn(f, framed)) framed.copy(fingers = true) else framed
             // the real result, small: the animation's reveal and the page's tile
             val shown = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), PREVIEW), recipe)
             val tile = DocTools.scaleToMax(shown.copy(Bitmap.Config.ARGB_8888, false), 240).asImageBitmap()
@@ -222,6 +224,13 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
         anim = null
       }
     }
+  }
+
+  /** Fingers found on the page as it will be framed (a failure finds none) */
+  private fun fingersOn(f: File, r: PageRecipe): Boolean = try {
+    PageRenderer.findFingers(DocTools.load(ctx, Uri.fromFile(f), 1600), r).isNotEmpty()
+  } catch (_: Throwable) {
+    false
   }
 
   /** "Looks blurry" / "Too dark" for a page's picture (the same check as for photos), or null */

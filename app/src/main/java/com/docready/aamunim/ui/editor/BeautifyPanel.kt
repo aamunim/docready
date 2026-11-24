@@ -90,6 +90,15 @@ internal fun BeautifyControls(state: PageEditorState) {
     }
     for (n in state.notes) Text(n, color = Amber, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 2.dp))
     r.beautyBadge()?.let { Text(it, color = EditorColors.Accent, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(vertical = 4.dp)) }
+    if (!signature && (state.fingerBoxes.isNotEmpty() || r.fingers)) {
+      val n = state.fingerBoxes.size
+      Switchable(
+        "Fingers",
+        if (n > 0) "$n outlined: painted over with the paper (what they cover is lost)" else "Painted over with the paper",
+        r.fingers,
+        true,
+      ) { on -> state.setFingers(on) }
+    }
 
     if (b == null) {
       Text(
@@ -227,13 +236,16 @@ private fun shownBox(c: CropRect, b: BeautifyRecipe, crop: CropRect?, aspect: Fl
  */
 internal fun beautyOverlay(state: PageEditorState): (DrawScope.(Rect) -> Unit)? {
   val r = state.recipe
-  val b: BeautifyRecipe = r.beautify ?: return null
+  val fingers = state.fingerBoxes
+  val b: BeautifyRecipe = r.beautify ?: return fingerOverlay(fingers, r.fingers)
   val folds = b.foldLines.isNotEmpty() && (b.folds <= 0f || state.showFolds)
   val trim = b.trim == null && b.foundTrim != null
-  if (b.edgeMarks.isEmpty() && !folds && !trim) return null
+  if (b.edgeMarks.isEmpty() && !folds && !trim) return fingerOverlay(fingers, r.fingers)
   val geo = state.geometryImage
   val aspect = if (geo != null) geo.width.toFloat() / max(1, geo.height) else 1f
+  val withFingers = fingerOverlay(fingers, r.fingers)
   return { f ->
+    withFingers?.invoke(this, f)
     val stroke = Stroke(width = 2.dp.toPx())
     for (m in b.edgeMarks) {
       val color = if (b.edges) EditorColors.Accent else Amber
@@ -255,6 +267,25 @@ internal fun beautyOverlay(state: PageEditorState): (DrawScope.(Rect) -> Unit)? 
     if (trim) {
       // what would be kept (the rest is the border)
       drawPath(shownBox(b.foundTrim, b, r.crop, aspect, f), Amber, style = stroke)
+    }
+  }
+}
+
+/**
+ * The fingers found, outlined in amber on the framed page (their boxes are parts of it), whether
+ * left in or painted over (the before view shows them)
+ */
+private fun fingerOverlay(boxes: List<com.docready.aamunim.imaging.beauty.FBox>, @Suppress("UNUSED_PARAMETER") on: Boolean): (DrawScope.(Rect) -> Unit)? {
+  if (boxes.isEmpty()) return null
+  return { f ->
+    val stroke = Stroke(width = 2.dp.toPx())
+    for (b in boxes) {
+      drawRect(
+        Amber,
+        topLeft = Offset(f.left + b.left * f.width, f.top + b.top * f.height),
+        size = Size((b.right - b.left) * f.width, (b.bottom - b.top) * f.height),
+        style = stroke,
+      )
     }
   }
 }

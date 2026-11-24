@@ -43,8 +43,10 @@ phone, with no sign-in:
   straightening (offered only above 15°), upside-down pages, black-border trim, glare on
   laminated cards, stains, yellow paper to white (ink colours kept), folds, uneven light,
   denoise then sharpen, faded ink — with Light / Medium / Strong and a switch and slider per
-  step. Fingers, punch holes and staples at the edges are outlined first and painted over
-  only when turned on. Photos, logos and stamps are left out of the colour steps; face photos
+  step. Punch holes and staples at the edges are outlined first and painted over only when
+  turned on. **Fingers** holding the paper (skin-coloured shapes coming in from an edge) are
+  painted out with the paper's own colour, on by default where found on a scanned page (never
+  over a face or a photo), with a "Fingers" switch and an amber outline in the Beautify tab. Photos, logos and stamps are left out of the colour steps; face photos
   never get the clean-up; signatures get only faded ink and denoise. Hold to compare, a
   before / after loupe, "Beautify all pages"; each page tile shows what ran
   ("✨ shadow · yellow · fold"). A blurry page says "rescan for better quality".

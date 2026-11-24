@@ -96,7 +96,8 @@ data class BeautifyRecipe(
 
 /** "✨ shadow · yellow · fold": what Beautify did on this page, or null */
 fun PageRecipe.beautyBadge(): String? {
-  val b = beautify ?: return null
-  val words = (if (removeShadows) listOf("shadow") else emptyList()) + b.labels()
+  val b = beautify
+  if (b == null) return if (fingers) "✨ Fingers removed" else null
+  val words = (if (removeShadows) listOf("shadow") else emptyList()) + b.labels() + (if (fingers) listOf("fingers removed") else emptyList())
   return if (words.isEmpty()) null else "✨ " + words.joinToString(" · ")
 }

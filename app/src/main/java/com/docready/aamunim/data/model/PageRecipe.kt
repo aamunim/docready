@@ -57,6 +57,11 @@ data class PageRecipe(
   val erase: List<EraseStroke> = emptyList(),
   /** ✨ Beautify (bad paper): null = never used on this page */
   val beautify: BeautifyRecipe? = null,
+  /**
+   * Fingers holding the paper painted out with the paper's colour (found again on the page as
+   * it is framed, at any size). On by default only where fingers were found on a scanned page.
+   */
+  val fingers: Boolean = false,
 ) {
   val isPlain: Boolean get() = this == Plain
 
