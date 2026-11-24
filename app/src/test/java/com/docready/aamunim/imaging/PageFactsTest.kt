@@ -40,6 +40,14 @@ class PageFactsTest {
   }
 
   @Test
+  fun otherFieldsOnTheLineDontHideTheName() {
+    assertEquals("Rahim", name("Name: Rahim, Post Office: Dhaka"))
+    assertEquals("Rina Akter", name("Name of Examination: HSC  Name: Rina Akter"))
+    assertNull(name("Bank Name: Sonali Bank"))
+    assertNull(name("Name: Dhaka College"))
+  }
+
+  @Test
   fun labelsOnOneLine() {
     val t = "Name : Fatema Begum Roll : 445566\nDOB 12 March 2005\nReg No-2019 123 456"
     assertEquals("Fatema Begum", name(t))

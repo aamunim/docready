@@ -127,16 +127,26 @@ object PageFacts {
     // the name: a line saying it is the applicant's first; a bare "Name" only if none does
     // (a parent's name later on the same line is cut off by the labels that follow the name)
     val own = lines.asSequence().mapNotNull { nameIn(ownName, it) }.firstOrNull()
-    val bare = own ?: lines.asSequence().filter { !notTheirs.containsMatchIn(it) }.mapNotNull { nameIn(bareName, it) }.firstOrNull()
+    val bare = own ?: lines.asSequence().mapNotNull { nameIn(bareName, it, bare = true) }.firstOrNull()
     bare?.let { out[FactKind.NAME] = it }
     return FactKind.entries.mapNotNull { k -> out[k]?.let { Fact(k, it) } }
   }
 
-  /** The name after the label, cleaned; null for "of Examination…" or nothing name-like */
-  private fun nameIn(r: Regex, line: String): String? {
+  /**
+   * The name after the label, cleaned; null for "of Examination…" or nothing name-like. [bare]:
+   * a plain "Name" label, refused when the words just before it or the value say it is something
+   * else's name ("Father's Name", "Bank Name: Sonali Bank"); other fields on the line don't matter.
+   */
+  private fun nameIn(r: Regex, line: String, bare: Boolean = false): String? {
     for (m in r.findAll(line)) {
       val v = m.groupValues[1].replace(nameStop, "").trim().trimEnd('.').trim()
       if (v.startsWith("of ", ignoreCase = true) || v.equals("of", ignoreCase = true)) continue
+      if (bare) {
+        // the label's own words: back to the previous field's end (":", ",", ";") at most
+        val before = line.substring(0, m.range.first + 1).substringAfterLast(':').substringAfterLast(',').substringAfterLast(';')
+          .trim().split(Regex("\\s+")).takeLast(2).joinToString(" ")
+        if (notTheirs.containsMatchIn(before) || notTheirs.containsMatchIn(v)) continue
+      }
       if (v.length >= 3 && v.count { it.isLetter() } >= 3) return titleCase(v)
     }
     return null

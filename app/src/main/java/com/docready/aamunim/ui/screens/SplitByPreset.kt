@@ -340,7 +340,8 @@ class SplitState(
    * mistake and moved before that teaches nothing). Pages not looked at yet teach nothing.
    */
   private fun learn(pages: List<PdfPage>, item: PresetItem) {
-    val words = pages.filter { taught.add(it to item.id) }.mapNotNull { looks[it]?.top }
+    // (a page not looked at yet is not marked as taught: it can still teach once it has been)
+    val words = pages.filter { looks[it] != null && taught.add(it to item.id) }.mapNotNull { looks[it]?.top }
     if (words.isEmpty() || item.id.isEmpty()) return
     scope.launch(Dispatchers.IO) { for (w in words) learned.learn(item.id, w) }
   }
@@ -363,11 +364,14 @@ class SplitState(
    * (Undo), to be run once they are back in the list
    */
   fun keepFor(pages: List<PdfPage>): () -> Unit {
+    val presetId = preset?.id
     val given = pages.mapNotNull { p -> assigned[p]?.let { p to it } }
     val cuts = crops.toMap()
     val cutPages = cropPages.toMap()
     val wasSuggested = pages.mapNotNull { p -> suggested[p]?.let { p to it } }
-    return {
+    return restore@{
+      // (another preset chosen since: its items are not these)
+      if (preset?.id != presetId) return@restore
       for ((p, i) in given) assigned[p] = i
       for ((i, box) in cuts) {
         val on = cutPages[i] ?: continue
