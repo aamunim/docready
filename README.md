@@ -66,6 +66,14 @@ phone, with no sign-in:
   chosen pages go to the item's own tool: Photo (face found and cut out, background, size, KB),
   Signature (cut, clean, size, KB) or Scan for a document (page editor; a PDF's pages keep their
   look), so the file always follows the item's rules; from a student it is added to them.
+- **Folders** (a tab): app-managed folders, nested, pinned, renamed; each saved file is a record
+  pointing at the file in Downloads / DocReady / <folder path> (nothing copied). Files go to the
+  folder chosen in the save sheet (remembered per preset; "Scans" by default), ZIPs to "ZIP
+  exports", students' files to Students / <student> (their own files are that folder). Search,
+  All / Students / Presets / Recent, sizes by kind, pinned cards, a 3-column file grid with
+  fits / close / too big; long-press to select (Move, Delete with "also from Downloads",
+  Share as ZIP, streamed); Add files, Share folder as ZIP; delete a folder keeping its files
+  (to Scans) or not. The older list of folders is read once into it and kept as it was.
 - **Students**: each applicant's name (any script), roll / registration, date of birth, notes
   and form preset. Their page is a checklist of the preset's items (done / missing / too big):
   tap an item to open the right tool for it, and "Add to <name>" puts the result in the

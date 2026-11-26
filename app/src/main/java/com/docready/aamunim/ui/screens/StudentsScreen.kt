@@ -1,5 +1,6 @@
 package com.docready.aamunim.ui.screens
 
+import com.docready.aamunim.data.FolderLogic
 import com.docready.aamunim.ui.components.AppCard
 import com.docready.aamunim.ui.components.CircleIconButton
 import com.docready.aamunim.ui.components.FitState
@@ -338,7 +339,7 @@ fun StudentScreen(
   onEdit: () -> Unit,
   /** Make item [index] of [presetId] with [tool] ("photo", "signature", "scan" or "pdf") */
   onMake: (tool: String, presetId: String, index: Int) -> Unit,
-  /** The student's folder (Downloads / DocReady / <name>) */
+  /** The student's folder in the Folders tab (by the student's id) */
   onOpenFolder: (String) -> Unit = {},
 ) {
   val context = LocalContext.current
@@ -372,7 +373,7 @@ fun StudentScreen(
           val naming = NameContext(preset = preset?.name, presetPattern = preset?.namePattern, student = s.name, roll = s.roll)
           val zip = Zipper.zip(context, copies, Naming.apply(app.settings.naming.value, naming, s.name, 1))
           copies.forEach { it.file.delete() }
-          if (save) app.saveTargets.phone.save(context, listOf(zip), s.name) else null to zip
+          if (save) app.saveTargets.phone.saveTo(context, listOf(zip), FolderLogic.ZIPS) else null to zip
         }
         when {
           outcome is SaveOutcome.Saved -> Toast.makeText(context, "Saved ${outcome.names.firstOrNull()} in ${outcome.where}", Toast.LENGTH_LONG).show()
@@ -417,7 +418,7 @@ fun StudentScreen(
   Scaffold(
     bottomBar = {
       BottomActions {
-        OutlinedButton(onClick = { onOpenFolder(s.name) }, modifier = Modifier.weight(1f).height(50.dp)) {
+        OutlinedButton(onClick = { onOpenFolder(s.id) }, modifier = Modifier.weight(1f).height(50.dp)) {
           Icon(AppIcons.FolderNav, contentDescription = null, modifier = Modifier.size(18.dp))
           Spacer(Modifier.width(6.dp))
           Text("Open folder")

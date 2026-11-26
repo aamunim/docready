@@ -32,6 +32,8 @@ import com.docready.aamunim.ui.screens.CheckSizeScreen
 import com.docready.aamunim.ui.screens.FileNamesScreen
 import com.docready.aamunim.ui.screens.FolderScreen
 import com.docready.aamunim.ui.screens.HomeScreen
+import com.docready.aamunim.ui.screens.FoldersScreen
+import com.docready.aamunim.ui.screens.FolderOpenScreen
 import com.docready.aamunim.ui.screens.SearchScreen
 import com.docready.aamunim.ui.screens.ItemChooserScreen
 import com.docready.aamunim.ui.screens.ItemUploadScreen
@@ -68,6 +70,11 @@ object Routes {
   const val FILE_NAMES = "file-names"
   const val FOLDER = "folder/{name}"
   const val SEARCH = "search"
+  const val FOLDERS = "folders"
+  const val FOLDER_OPEN = "folder-open/{key}"
+
+  /** A folder of the Folders tab: its id, "students", "student:<id>" or "preset:<name>" */
+  fun folderOpen(key: String) = "folder-open/${Uri.encode(key)}"
   const val PRESET_QR = "preset-qr/{id}"
   const val ITEM_ADD = "item-add?preset={preset}&item={item}&student={student}&draft={draft}"
   const val ITEM_CHOOSE = "item-choose"
@@ -123,6 +130,7 @@ private fun android.os.Bundle?.resume(): Boolean = this?.getString("draft") == "
 /** The bottom navigation's tabs, in order (a tab can be inserted, e.g. Folders second) */
 private val navTabs: List<NavTab> = listOf(
   NavTab("home", Routes.HOME, "Home", AppIcons.Home),
+  NavTab("folders", Routes.FOLDERS, "Folders", AppIcons.FolderNav),
   NavTab("students", Routes.STUDENTS, "Students", AppIcons.People),
   NavTab("presets", Routes.PRESETS, "Presets", AppIcons.PresetList),
   NavTab("settings", Routes.ACCOUNTS, "Settings", AppIcons.Settings),
@@ -168,6 +176,7 @@ fun DocReadyApp() {
         onStudents = { nav.navigate(Routes.STUDENTS) },
         onCheckSize = { nav.navigate(Routes.CHECK_SIZE) },
         onSearch = { nav.navigate(Routes.SEARCH) },
+        onFolders = { goTab(tabs.first { it.key == "folders" }) },
         onDraft = { d ->
           // the tool brings its draft back at once ("scan", "pdf", "split" or "photo")
           nav.navigate(Routes.tool(if (d.tool == "pick") "item-add" else d.tool, d.presetId, d.itemIndex, d.studentId, draft = true))
@@ -207,7 +216,7 @@ fun DocReadyApp() {
         onBack = back,
         onEdit = { nav.navigate(Routes.studentEdit(id)) },
         onMake = { tool, presetId, i -> nav.navigate(Routes.tool(tool, presetId, i, id)) },
-        onOpenFolder = { nav.navigate(Routes.folder(it)) },
+        onOpenFolder = { nav.navigate(Routes.folderOpen("student:$it")) },
       )
     }
     composable(Routes.STUDENT_EDIT) { entry ->
@@ -227,6 +236,15 @@ fun DocReadyApp() {
       PdfToolsScreen(back, startMode = PdfMode.SPLIT, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }, resume = entry.arguments.resume())
     }
     composable(Routes.CHECK_SIZE) { CheckSizeScreen(back) }
+    composable(Routes.FOLDERS) { FoldersScreen(onOpen = { nav.navigate(Routes.folderOpen(it)) }) }
+    composable(Routes.FOLDER_OPEN) { entry ->
+      FolderOpenScreen(
+        entry.arguments?.getString("key") ?: "",
+        onBack = back,
+        onOpen = { nav.navigate(Routes.folderOpen(it)) },
+        onStudent = { nav.navigate(Routes.student(it)) },
+      )
+    }
     composable(Routes.SEARCH) {
       SearchScreen(back, onPreset = { nav.navigate(Routes.preset(it)) }, onStudent = { nav.navigate(Routes.student(it)) })
     }

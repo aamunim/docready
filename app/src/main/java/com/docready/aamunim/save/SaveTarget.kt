@@ -64,8 +64,8 @@ class ComingSoonTarget(override val kind: SaveTargetKind) : SaveTarget {
 }
 
 /** All places, in the order the save sheet shows them */
-class SaveTargets(folders: com.docready.aamunim.data.FolderRepository) {
-  val phone: SaveTarget = PhoneSaveTarget(folders)
+class SaveTargets(tree: com.docready.aamunim.data.FolderTree) {
+  val phone: PhoneSaveTarget = PhoneSaveTarget(tree)
   val share: SaveTarget = ShareSaveTarget
   val googleDrive: SaveTarget = ComingSoonTarget(SaveTargetKind.GOOGLE_DRIVE)
   val ittc: SaveTarget = ComingSoonTarget(SaveTargetKind.ITTC)

@@ -1,5 +1,6 @@
 package com.docready.aamunim.ui.components
 
+import com.docready.aamunim.data.FolderLogic
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
@@ -94,14 +95,24 @@ fun SaveSheet(
   val settings by app.settings.naming.collectAsState()
   val scope = rememberCoroutineScope()
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-  var folder by rememberSaveable { mutableStateOf(defaultFolder) }
-  var toPhone by rememberSaveable { mutableStateOf(true) }
   var asZip by rememberSaveable { mutableStateOf(false) }
+  // the Folders tab's folder: the one last used for this preset, else Scans
+  val tree = app.folderTree
+  val treeData by tree.data.collectAsState()
+  var folderId by rememberSaveable { mutableStateOf<String?>(null) }
+  LaunchedEffect(Unit) {
+    if (folderId == null) folderId = withContext(Dispatchers.IO) { tree.lastFolder(naming.preset) ?: tree.ensure(FolderLogic.SCANS) }
+  }
+  val folderPath = remember(treeData, folderId) { tree.path(folderId).ifEmpty { FolderLogic.SCANS } }
+
+  var toPhone by rememberSaveable { mutableStateOf(true) }
   var choosing by remember { mutableStateOf(false) }
   var busy by remember { mutableStateOf<String?>(null) }
   var error by remember { mutableStateOf<String?>(null) }
   // the files as they are now ("Fix to fit" replaces the ones it shrinks)
   var items by remember { mutableStateOf(files) }
+  // (one ZIP goes to "ZIP exports")
+  val folder = if (asZip && items.size > 1) FolderLogic.ZIPS else folderPath
   val facts = remember { mutableStateMapOf<java.io.File, FileFacts>() }
   LaunchedEffect(items) {
     for (f in items) {
@@ -244,7 +255,7 @@ fun SaveSheet(
             Icon(AppIcons.FolderNav, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
           }
           Spacer(Modifier.width(10.dp))
-          Text("Downloads › DocReady › $folder", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+          Text(folder.replace("/", " › "), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
           Text("Change", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
         }
       }
@@ -284,7 +295,9 @@ fun SaveSheet(
             scope.launch {
               try {
                 val ready = prepared()
-                when (val r = targets.phone.save(context, ready, folder)) {
+                // remembered for this preset next time
+                folderId?.let { id -> withContext(Dispatchers.IO) { tree.rememberFolder(naming.preset, id) } }
+                when (val r = targets.phone.saveTo(context, ready, folder, preset = naming.preset)) {
                   is SaveOutcome.Saved -> {
                     val what = if (r.names.size == 1) r.names[0] else "${r.names.size} files"
                     Toast.makeText(context, "Saved $what in ${r.where}" + (r.note?.let { "\n$it" } ?: ""), Toast.LENGTH_LONG).show()
@@ -310,39 +323,24 @@ fun SaveSheet(
     }
   }
   if (choosing) {
-    FolderNameDialog(folder, folders.map { it.name }, onPick = {
-      folder = it
-      choosing = false
-    }, onDismiss = { choosing = false })
+    FolderPickerDialog(
+      treeData.folders,
+      folderId,
+      onPick = {
+        folderId = it
+        choosing = false
+      },
+      onNew = { parent, name ->
+        scope.launch { folderId = withContext(Dispatchers.IO) { tree.create(parent, name) } }
+      },
+      onDismiss = { choosing = false },
+    )
   }
 }
 
 @Composable
 private fun FieldLabel(text: String) {
   Text(text, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 14.dp, bottom = 6.dp))
-}
-
-/** "Change" folder: a name (Downloads / DocReady / <name>), or one used before */
-@Composable
-private fun FolderNameDialog(current: String, used: List<String>, onPick: (String) -> Unit, onDismiss: () -> Unit) {
-  var name by remember { mutableStateOf(current) }
-  androidx.compose.material3.AlertDialog(
-    onDismissRequest = onDismiss,
-    title = { Text("Save to folder") },
-    text = {
-      Column {
-        OutlinedTextField(value = name, onValueChange = { name = it.take(60) }, label = { Text("Folder name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        val recent = used.filter { it != name }.take(8)
-        if (recent.isNotEmpty()) {
-          Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (n in recent) FilterChip(selected = false, onClick = { name = n }, label = { Text(n) })
-          }
-        }
-      }
-    },
-    confirmButton = { Button(onClick = { onPick(FileNames.safeFolder(name)) }, enabled = name.isNotBlank()) { Text("Use") } },
-    dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-  )
 }
 
 /** A file in the save sheet: its kind, name, "X KB of Y KB · pixels / pages", and a badge */

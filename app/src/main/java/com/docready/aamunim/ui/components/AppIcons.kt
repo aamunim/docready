@@ -100,6 +100,7 @@ object AppIcons {
   val Grid = icon("grid", "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z")
   val ListLines = icon("list_lines", "M8 6h13M8 12h13M8 18h13", "M3.5 6h.01M3.5 12h.01M3.5 18h.01")
   val Star = icon("star", "m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z")
+  val Cloud = icon("cloud", "M7 18h10a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.1 11 3.5 3.5 0 0 0 7 18z")
   val More = icon("more", "M12 5h.01M12 12h.01M12 19h.01")
   val Spark = icon("spark", "M12 3v4M12 17v4M3 12h4M17 12h4", "m6 6 2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6")
 

@@ -73,6 +73,11 @@ import kotlinx.coroutines.launch
 /** A saved file with the folder it is in */
 private class FileInFolder(val file: SavedFile, val folder: String)
 
+/** The Folders tab's saved files, each with its folder's path */
+private fun recordsOf(d: com.docready.aamunim.data.FolderData): List<FileInFolder> = d.files.map { r ->
+  FileInFolder(SavedFile(r.name, r.uri, r.mime, r.bytes, r.savedAt, r.maxKb), com.docready.aamunim.data.FolderLogic.pathOf(d.folders, r.folderId))
+}
+
 @Composable
 fun HomeScreen(
   onScan: () -> Unit,
@@ -93,16 +98,14 @@ fun HomeScreen(
 ) {
   val context = LocalContext.current
   val app = context.docReady
-  val folders by app.folders.folders.collectAsState()
+  val tree by app.folderTree.data.collectAsState()
   val drafts by app.drafts.drafts.collectAsState()
   // (read once per visit; drafts older than 30 days are removed on the first read)
   LaunchedEffect(Unit) { app.drafts.refresh() }
   val scope = rememberCoroutineScope()
   var deleting by remember { mutableStateOf<Draft?>(null) }
   var allDrafts by rememberSaveable { mutableStateOf(false) }
-  val recent = remember(folders) {
-    folders.flatMap { f -> f.files.map { FileInFolder(it, f.name) } }.sortedByDescending { it.file.savedAt }.take(4)
-  }
+  val recent = remember(tree) { recordsOf(tree).sortedByDescending { it.file.savedAt }.take(4) }
 
   Scaffold { padding ->
     Column(
@@ -287,7 +290,7 @@ fun SearchScreen(onBack: () -> Unit, onPreset: (String) -> Unit, onStudent: (Str
   val app = context.docReady
   val presets by app.presets.presets.collectAsState()
   val students by app.students.students.collectAsState()
-  val folders by app.folders.folders.collectAsState()
+  val tree by app.folderTree.data.collectAsState()
   var q by rememberSaveable { mutableStateOf("") }
   val t = q.trim()
   val foundPresets = if (t.isEmpty()) emptyList() else presets.filter { it.name.contains(t, ignoreCase = true) }.take(20)
@@ -299,7 +302,7 @@ fun SearchScreen(onBack: () -> Unit, onPreset: (String) -> Unit, onStudent: (Str
   val foundFiles = if (t.isEmpty()) {
     emptyList()
   } else {
-    folders.flatMap { f -> f.files.map { FileInFolder(it, f.name) } }.filter { it.file.name.contains(t, ignoreCase = true) || it.folder.contains(t, ignoreCase = true) }.take(40)
+    recordsOf(tree).filter { it.file.name.contains(t, ignoreCase = true) || it.folder.contains(t, ignoreCase = true) }.take(40)
   }
   Scaffold(topBar = { DocTopBar("Search", onBack) }) { padding ->
     LazyColumn(Modifier.padding(padding).fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 20.dp, end = 20.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

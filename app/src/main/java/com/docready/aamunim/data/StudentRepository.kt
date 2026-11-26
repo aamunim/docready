@@ -24,7 +24,7 @@ import java.util.UUID
  */
 class StudentRepository(
   private val context: Context,
-  private val phone: SaveTarget,
+  private val phone: com.docready.aamunim.save.PhoneSaveTarget,
   private val settings: SettingsRepository,
   private val presets: PresetRepository,
 ) {
@@ -67,47 +67,13 @@ class StudentRepository(
     var left = 0
     if (alsoDownloads) {
       for (f in s.files) {
-        val uri = Uri.parse(f.downloadsUri ?: continue)
-        val own = ownFile(uri)
-        val removed = try {
-          if (own != null) own.delete() || !own.exists() else context.contentResolver.delete(uri, null, null) > 0
-        } catch (_: Exception) {
-          false
-        }
         // (a file already gone by other means is not a failure)
-        if (!removed && stillThere(uri)) left++
+        if (!com.docready.aamunim.save.DownloadsFiles.delete(context, f.downloadsUri ?: continue)) left++
       }
     }
     dirOf(id).deleteRecursively()
     synchronized(lock) { write(_students.value.filter { it.id != id }) }
     left
-  }
-
-  /**
-   * Android 8-9 saves (the app's own FileProvider link): the file itself. Its provider answers a
-   * query with a row even when the file is gone, so the file on disk is what tells.
-   */
-  private fun ownFile(uri: Uri): File? {
-    if (uri.authority != context.packageName + ".fileprovider") return null
-    val seg = uri.pathSegments
-    if (seg.size < 2) return null
-    val root = when (seg[0]) {
-      "saved" -> context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)?.let { File(it, "DocReady") }
-      "saved_internal" -> File(context.filesDir, "Downloads/DocReady")
-      else -> null
-    } ?: return null
-    val f = File(root, seg.drop(1).joinToString("/"))
-    // (never outside the folder the link stands for)
-    return f.takeIf { it.canonicalPath.startsWith(root.canonicalPath + File.separator) }
-  }
-
-  private fun stillThere(uri: Uri): Boolean = ownFile(uri)?.exists() ?: try {
-    context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { it.moveToFirst() } ?: false
-  } catch (_: SecurityException) {
-    // (not readable by the app any more, but it may well be there)
-    true
-  } catch (_: Exception) {
-    false
   }
 
   /** One file removed from the student (its app copy; the Downloads copy stays) */
@@ -141,7 +107,8 @@ class StudentRepository(
       f.copy(file = kept, name = name)
     }
     // also in Downloads/DocReady/<student> (a failure there still keeps the app's copies)
-    val outcome = phone.save(context, named, s.name)
+    // Downloads / DocReady / Students / <name>: the student's folder (their files are its list)
+    val outcome = phone.saveTo(context, named, "Students/${s.name}", record = false)
     val links = (outcome as? SaveOutcome.Saved)?.files ?: emptyList()
     val now = System.currentTimeMillis()
     val added = named.mapIndexed { i, f ->

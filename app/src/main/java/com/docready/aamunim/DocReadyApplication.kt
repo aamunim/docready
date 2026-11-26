@@ -16,7 +16,9 @@ class DocReadyApplication : Application() {
 
   val presets: PresetRepository by lazy { PresetRepository(this) }
   val folders: FolderRepository by lazy { FolderRepository(this) }
-  val saveTargets: SaveTargets by lazy { SaveTargets(folders) }
+  /** The Folders tab's folders and file records (made once from the older list of folders) */
+  val folderTree: com.docready.aamunim.data.FolderTree by lazy { com.docready.aamunim.data.FolderTree(this, folders) }
+  val saveTargets: SaveTargets by lazy { SaveTargets(folderTree) }
   val settings: com.docready.aamunim.data.SettingsRepository by lazy { com.docready.aamunim.data.SettingsRepository(this) }
   val drafts: com.docready.aamunim.data.DraftRepository by lazy { com.docready.aamunim.data.DraftRepository(this) }
   val learned: com.docready.aamunim.data.LearnedWords by lazy { com.docready.aamunim.data.LearnedWords(this) }
