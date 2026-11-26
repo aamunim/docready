@@ -107,6 +107,12 @@ fun SaveSheet(
 
   var toPhone by rememberSaveable { mutableStateOf(true) }
   var choosing by remember { mutableStateOf(false) }
+  // "Also upload to Drive" (when connected), remembered per preset
+  val drive by com.docready.aamunim.drive.DriveAuth.account.collectAsState()
+  var toDrive by rememberSaveable { mutableStateOf<Boolean?>(null) }
+  LaunchedEffect(drive.connected) {
+    if (toDrive == null && drive.connected) toDrive = withContext(Dispatchers.IO) { tree.driveFor(naming.preset) }
+  }
   var busy by remember { mutableStateOf<String?>(null) }
   var error by remember { mutableStateOf<String?>(null) }
   // the files as they are now ("Fix to fit" replaces the ones it shrinks)
@@ -265,6 +271,15 @@ fun SaveSheet(
           Text("Also make one ZIP", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
         }
       }
+      if (drive.connected) {
+        Row(Modifier.fillMaxWidth().clickable { toDrive = toDrive != true }, verticalAlignment = Alignment.CenterVertically) {
+          Checkbox(checked = toDrive == true, onCheckedChange = { toDrive = it })
+          Column {
+            Text("Also upload to Drive", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Text("My Drive / DocReady / ${folder.replace("/", " / ")} · waits for a network", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+          }
+        }
+      }
       busy?.let { BusyRow(it) }
       ErrorText(error)
       VSpace(14)
@@ -299,6 +314,18 @@ fun SaveSheet(
                 folderId?.let { id -> withContext(Dispatchers.IO) { tree.rememberFolder(naming.preset, id) } }
                 when (val r = targets.phone.saveTo(context, ready, folder, preset = naming.preset)) {
                   is SaveOutcome.Saved -> {
+                    // the saved files in the Drive queue (and the choice kept for this preset)
+                    if (drive.connected) {
+                      val up = toDrive == true
+                      val links = r.files.map { it.uri }.toSet()
+                      withContext(Dispatchers.IO) {
+                        tree.rememberDrive(naming.preset, up)
+                        if (up) {
+                          val ids = tree.data.value.files.filter { it.uri in links }.map { it.id }.toSet()
+                          com.docready.aamunim.drive.DriveQueue.enqueue(context, recordIds = ids)
+                        }
+                      }
+                    }
                     val what = if (r.names.size == 1) r.names[0] else "${r.names.size} files"
                     Toast.makeText(context, "Saved $what in ${r.where}" + (r.note?.let { "\n$it" } ?: ""), Toast.LENGTH_LONG).show()
                     onSaved(ready)

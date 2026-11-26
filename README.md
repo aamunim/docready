@@ -106,7 +106,8 @@ phone, with no sign-in:
 - **Share to / Open with DocReady**: photos and PDFs shared or opened from other apps open
   in PDF tools / Photo / Signature.
 
-The app is offline only: it has **no internet permission** and no analytics. All ML Kit models
+Everything is made on the phone, with no analytics. The only network use is the optional
+Google Drive upload (the user's own account; files they choose). All ML Kit models
 (text, faces, photo background, document and QR scanners) come through Google Play services,
 which downloads them itself (manifest `com.google.mlkit.vision.DEPENDENCIES`:
 `ocr,face,subject_segment,barcode_ui`), so none is inside the APK.
@@ -171,16 +172,36 @@ app/src/main/java/com/docready/aamunim/
 The image code is ported from the DocReady Expo module (lead repo,
 `modules/doc-scan/android`), with the React Native parts removed.
 
+## Google Drive (optional, the user's own Google account)
+
+- **Settings → Google Drive → Connect**: Google Identity Services' `AuthorizationClient`
+  (`Identity.getAuthorizationClient(ctx).authorize(...)`), scope
+  `https://www.googleapis.com/auth/drive.file` only: DocReady sees only the files it creates.
+  A token is asked for per upload batch (Play services keeps it); a 401 clears it
+  (`clearToken`) and asks again silently. Disconnect clears the token and forgets the account.
+- **Uploads**: Drive REST v3 over HttpURLConnection; one request up to 5 MB, a resumable upload
+  above. Files go to My Drive / DocReady / <folder path> (students: DocReady / Students /
+  <name>); Drive folder ids are cached per local folder and made again when deleted on Drive.
+  A file uploaded before gets a new revision of the same Drive file.
+- **Where**: the save sheet's "Also upload to Drive" (remembered per preset); a folder's menu
+  "Upload to Drive" and "Auto upload new files"; select mode's cloud button. Each file shows
+  uploaded (cloud), waiting (spinner) or failed (amber); Settings shows "N waiting · Retry all".
+- **Queue**: WorkManager, one unique job that needs a network, retried with exponential
+  backoff; nothing blocks the app, and offline the queue waits.
+- **Setting it up (once, by the owner of the Google Cloud project)**:
+  1. Google Cloud Console → APIs & Services → enable the **Google Drive API**.
+  2. OAuth consent screen: app name, support e-mail, the scope `.../auth/drive.file`
+     (non-sensitive); publish it (or add testers while testing).
+  3. Credentials → **OAuth client ID → Android**, package `com.docready.aamunim`, with the
+     **SHA-1 of the upload key** (`keytool -list -v -keystore <upload.jks>`); make a second
+     Android client with the **Play app-signing key's SHA-1** (Play Console → Test and release
+     → App integrity → App signing). The debug build (`com.docready.aamunim.debug`) needs its
+     own client with the debug key's SHA-1. No client secret is used or stored; there is no
+     server.
+- **Play Data safety**: "Files and docs: files you choose are sent to your Google Drive" —
+  collected: no (sent only to the user's own Drive, on their action), shared: no, encrypted
+  in transit: yes, optional.
+
 ## Later (not in this version)
 
-- **Google Drive (optional, personal)**: Google Identity Services `AuthorizationClient`
-  (`Identity.getAuthorizationClient(activity).authorize(...)`) with only the
-  `https://www.googleapis.com/auth/drive.file` scope (DocReady sees only files it creates),
-  uploads to a `DocReady` folder, queued while offline. Needs an **Android OAuth client** in
-  Google Cloud for package `com.docready.aamunim` with **both** SHA-1 fingerprints: the Play
-  app-signing key (Play Console → App integrity) and the upload key. Adds the INTERNET
-  permission. Implemented as a new `SaveTarget` (`GOOGLE_DRIVE`).
-- **ITTC account (optional, staff)**: sign-in to the ITTC server (Supabase), reusing ITTC
-  Phone's direct-mode sign-in code; the institute's presets, lead folders, uploads to the ITTC
-  Drive (`SaveTarget` `ITTC`). Server URL / anon key from CI secrets, never in the repo.
-- Lead folder screen (mockup "Folder"), upload queue with retry.
+- Nothing planned here for now (the ITTC sign-in was dropped).

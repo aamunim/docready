@@ -335,7 +335,7 @@ fun PresetQrImportScreen(onBack: () -> Unit, onImported: (String) -> Unit) {
         .addOnFailureListener { e ->
           if ((e as? MlKitException)?.errorCode == MlKitException.UNAVAILABLE) {
             // its module not downloaded yet (a fresh install): asked for now, by Play services
-            // itself (the app has no network permission)
+            // itself
             askForScanner(options)
             vm.error = "The scanner is getting ready (Google Play is downloading it). Try again in a minute, or use “From a picture”."
           } else {

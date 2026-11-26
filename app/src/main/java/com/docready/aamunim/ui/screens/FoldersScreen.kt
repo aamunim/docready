@@ -505,6 +505,15 @@ fun FolderOpenScreen(key: String, onBack: () -> Unit, onOpen: (String) -> Unit, 
     else -> emptyList()
   }.sortedByDescending { it.savedAt }
   val chosen = files.filter { it.key in selected }
+  val driveOn = com.docready.aamunim.drive.DriveAuth.account.collectAsState().value.connected
+
+  /** Files put in the Drive queue (records by id, students' files by their app path) */
+  fun uploadAll(list: List<FolderFile>) {
+    val ids = list.mapNotNull { it.record?.id }.toSet()
+    val paths = list.mapNotNull { it.student?.second?.path }.toSet()
+    scope.launch { withContext(Dispatchers.IO) { com.docready.aamunim.drive.DriveQueue.enqueue(context, ids, paths) } }
+    Toast.makeText(context, "${list.size} file${if (list.size == 1) "" else "s"} queued for Google Drive", Toast.LENGTH_SHORT).show()
+  }
 
   // files Android asks the user about before deleting (no longer the app's own)
   val askDelete = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { res ->
@@ -597,6 +606,14 @@ fun FolderOpenScreen(key: String, onBack: () -> Unit, onOpen: (String) -> Unit, 
               Icon(AppIcons.FolderNav, contentDescription = "Move", tint = MaterialTheme.colorScheme.surface)
             }
           }
+          if (driveOn) {
+            IconButton(onClick = {
+              uploadAll(chosen)
+              selected.clear()
+            }, modifier = Modifier.size(44.dp).background(Color.White.copy(alpha = 0.1f), CircleShape)) {
+              Icon(AppIcons.Cloud, contentDescription = "Upload to Drive", tint = MaterialTheme.colorScheme.surface)
+            }
+          }
           IconButton(onClick = { deletingFiles = true }, modifier = Modifier.size(44.dp).background(Color.White.copy(alpha = 0.1f), CircleShape)) {
             Icon(AppIcons.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.surface)
           }
@@ -642,6 +659,23 @@ fun FolderOpenScreen(key: String, onBack: () -> Unit, onOpen: (String) -> Unit, 
             Box {
               IconButton(onClick = { menu = true }, modifier = Modifier.size(44.dp)) { Icon(AppIcons.More, contentDescription = "More options") }
               DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                if (driveOn && files.isNotEmpty()) {
+                  DropdownMenuItem(text = { Text("Upload to Drive") }, onClick = {
+                    menu = false
+                    uploadAll(files)
+                  })
+                }
+                if (driveOn && (folder != null || student != null)) {
+                  val auto = folder?.autoUpload ?: (key in data.autoUploadKeys)
+                  DropdownMenuItem(text = { Text(if (auto) "Auto upload: on (turn off)" else "Auto upload new files") }, onClick = {
+                    menu = false
+                    scope.launch {
+                      withContext(Dispatchers.IO) {
+                        if (folder != null) tree.setAutoUpload(folder.id, !auto) else tree.setAutoUploadKey(key, !auto)
+                      }
+                    }
+                  })
+                }
                 if (folder != null) {
                   DropdownMenuItem(text = { Text("New folder inside") }, onClick = { menu = false; newSub = true })
                   DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; renaming = true })
