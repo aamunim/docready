@@ -25,6 +25,16 @@ fun ContinueDraftDialog(draft: Draft, onContinue: () -> Unit, onDiscard: () -> U
 /** The tool's earlier draft offered, if there is one */
 @Composable
 fun DraftOffer(host: DraftHost) {
+  host.replaceOffer?.let { d ->
+    AlertDialog(
+      onDismissRequest = {},
+      title = { Text("An unfinished one is here") },
+      text = { Text("${d.title}\n${d.summary()}\n\nContinue it, or replace it with the pages you just chose? If you continue it, the pages you just picked will be dropped.") },
+      confirmButton = { Button(onClick = { host.replaceWithNew() }) { Text("Replace with the new pages") } },
+      dismissButton = { TextButton(onClick = { host.keepUnfinished() }) { Text("Continue the unfinished one") } },
+    )
+    return
+  }
   val d = host.offer ?: return
   ContinueDraftDialog(d, onContinue = { host.continueDraft() }, onDiscard = { host.discard() })
 }

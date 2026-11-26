@@ -1,5 +1,7 @@
 package com.docready.aamunim.ui.screens
 
+import com.docready.aamunim.intake.Handoff
+import com.docready.aamunim.data.DraftRepository
 import android.app.Application
 import android.content.ActivityNotFoundException
 import android.widget.Toast
@@ -99,7 +101,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
-class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : AndroidViewModel(app) {
+class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int, studentId: String? = null) : AndroidViewModel(app) {
   private val ctx: Application get() = getApplication()
   val preset = app.docReady.presets.get(presetId)
   private val item = preset?.items?.getOrNull(itemIndex)?.takeIf { it.kind == ItemKind.SIGNATURE }
@@ -535,12 +537,17 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
       }
     }
   }
+
+  init {
+    // a page chosen for this item in the page picker
+    Handoff.take(DraftRepository.keyOf("signature", presetId, itemIndex, studentId))?.firstOrNull()?.let { setSourceFile(it.file) }
+  }
 }
 
 @Composable
 fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}, studentId: String? = null) {
   val app = LocalContext.current.applicationContext as Application
-  val vm: SignatureViewModel = viewModel { SignatureViewModel(app, presetId, itemIndex) }
+  val vm: SignatureViewModel = viewModel { SignatureViewModel(app, presetId, itemIndex, studentId) }
   // the shared page editor takes the whole screen while it is open
   vm.editor?.let {
     PageEditorScreen(it)

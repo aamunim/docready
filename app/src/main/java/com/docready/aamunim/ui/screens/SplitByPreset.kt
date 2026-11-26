@@ -72,6 +72,19 @@ import com.docready.aamunim.imaging.PdfTools
 import com.docready.aamunim.imaging.SignatureTools
 import com.docready.aamunim.save.ReadyFile
 import com.docready.aamunim.ui.components.BeautyBadge
+import com.docready.aamunim.ui.components.AppCard
+import com.docready.aamunim.ui.components.dashedBorder
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.runtime.remember
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.sp
 import com.docready.aamunim.ui.components.DuplicateBadge
 import com.docready.aamunim.ui.components.Duplicates
 import com.docready.aamunim.ui.components.DuplicatesBar
@@ -234,15 +247,13 @@ class SplitState(
   private val looks = HashMap<PdfPage, PageLook>()
   private var suggestJob: Job? = null
 
-  /**
-   * What a page shows: its words (OCR on a page about 1000 px), a face and how big, and the
-   * shape of its ink
-   */
-  private class PageLook(val tokens: Set<String>, val top: List<String>, val words: Int, val faceShare: Float, val ink: InkShape, val textRead: Boolean = true)
+  /** Looks at pages and says which item each looks like (shared with the page picker) */
+  private val looker = PageLooker(ctx)
 
   /** Text reading is not ready yet (its model downloading): suggestions use the pictures only */
-  var textNotReady by mutableStateOf(false)
-    private set
+  val textNotReady: Boolean get() = looker.textNotReady
+
+
 
   /**
    * Suggestions made again for the pages not given yet, one page at a time (each shows as soon
@@ -259,9 +270,9 @@ class SplitState(
           val look = looks[page] ?: run {
             suggesting = "Looking at page ${n + 1} of ${pages.size}…"
             // (a page looked at without its text is looked at again next time)
-            lookAt(page)?.also { if (it.textRead) looks[page] = it }
+            looker.look(page, recipes[page] ?: PageRecipe.Plain)?.also { if (it.textRead) looks[page] = it }
           } ?: continue
-          val best = choose(look, p)
+          val best = looker.choose(look, p)
           if (best != null && best !in (rejected[page] ?: emptySet<Int>()) && page !in assigned) suggested[page] = best else suggested.remove(page)
         }
       } finally {
@@ -270,58 +281,7 @@ class SplitState(
     }
   }
 
-  private suspend fun lookAt(page: PdfPage): PageLook? = try {
-    val b = withContext(Dispatchers.Default) { page.rendered(ctx, recipes[page] ?: PageRecipe.Plain, Ocr.QUICK_SIDE) }
-    // the text model still downloading: the face, signature and ink checks still run
-    val text = try {
-      Ocr.read(b, Ocr.QUICK_SIDE).also { textNotReady = false }
-    } catch (_: OcrNotReady) {
-      textNotReady = true
-      null
-    }
-    withContext(Dispatchers.Default) {
-      val faceShare = try {
-        DocPhoto.faces(b).firstOrNull()?.let { it.box.width() * it.box.height() / (b.width.toFloat() * b.height) } ?: 0f
-      } catch (_: Exception) {
-        0f // (the face finder not ready: no photo suggestion)
-      }
-      val small = DocTools.scaleToMax(b, 300)
-      val px = IntArray(small.width * small.height)
-      small.getPixels(px, 0, small.width, 0, 0, small.width, small.height)
-      val all = text?.text ?: ""
-      PageLook(Keywords.tokens(all).toSet(), Keywords.top(all), text?.words?.size ?: 0, faceShare, InkShape.of(px, small.width, small.height), textRead = text != null)
-    }
-  } catch (e: kotlinx.coroutines.CancellationException) {
-    throw e
-  } catch (_: Throwable) {
-    null
-  }
 
-  /**
-   * The item a page looks like: a face taking some of the page with little text → a photo item;
-   * mostly white with one small cluster of ink → a signature item; else the document item whose
-   * title, keywords and learned words match best (no suggestion on a tie or a weak match).
-   */
-  private fun choose(look: PageLook, p: Preset): Int? {
-    val items = p.items
-    // a face alone is not enough (an NID card or a form has one): a large face on a page with
-    // little ink of text (Bangla text is not read, so the ink tells), or a page that is mostly photo
-    val bigFace = look.faceShare >= 0.10f && look.words < 30 && look.ink.darkShare < 0.06f
-    val mostlyPhoto = look.faceShare >= 0.05f && look.ink.midShare >= 0.5f && look.words < 15
-    if (bigFace || mostlyPhoto) {
-      items.indexOfFirst { it.kind == ItemKind.PHOTO }.takeIf { it >= 0 }?.let { return it }
-    }
-    if (look.faceShare == 0f && look.ink.looksLikeSignature(look.words)) {
-      items.indexOfFirst { it.kind == ItemKind.SIGNATURE }.takeIf { it >= 0 }?.let { return it }
-    }
-    val scores = items.mapIndexedNotNull { i, it ->
-      if (it.kind != ItemKind.DOCUMENT) null else i to Keywords.score(look.tokens, it.title, it.keywords, learned.words(it.id))
-    }.sortedByDescending { it.second }
-    val best = scores.firstOrNull() ?: return null
-    if (best.second < 2) return null
-    if (scores.size > 1 && scores[1].second == best.second) return null
-    return best.first
-  }
 
   fun accept(page: PdfPage) {
     val i = suggested.remove(page) ?: return
@@ -714,18 +674,13 @@ fun SplitTool(
     SplitPages(split, pages, null, onEdit, idle, duplicates)
     return
   }
-  Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-    for (p in presets) FilterChip(selected = split.preset?.id == p.id, onClick = { split.choosePreset(p) }, label = { Text(p.name) })
-  }
-  Row(verticalAlignment = Alignment.CenterVertically) {
-    Text(
-      "Each paper of the form (SSC certificate, NID…) is an item of a preset.",
-      style = MaterialTheme.typography.bodySmall,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-      modifier = Modifier.weight(1f),
-    )
-    TextButton(onClick = onNewPreset) { Text("+ New preset") }
-  }
+  PresetField(presets, split.preset, onPick = { split.choosePreset(it) }, onNew = onNewPreset)
+  Text(
+    "Each paper of the form (SSC certificate, NID…) is an item of a preset.",
+    style = MaterialTheme.typography.bodySmall,
+    color = MaterialTheme.colorScheme.onSurfaceVariant,
+    modifier = Modifier.padding(top = 6.dp),
+  )
   val preset = split.preset
   if (preset == null) {
     SplitHint("Choose a preset above, then give the pages below to its items.")
@@ -734,14 +689,11 @@ fun SplitTool(
   }
 
   SectionLabel("2 · Select pages, then give them to")
-  Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+  // each item with how many pages it has: given (green), missing (amber), chosen (dark)
+  FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
     preset.items.forEachIndexed { i, item ->
       val n = split.pagesOf(i, pages).size
-      FilterChip(
-        selected = split.target == i,
-        onClick = { split.target = i },
-        label = { Text(if (n == 0) "${item.title} · missing" else "${item.title} · $n") },
-      )
+      ItemCountChip(if (n == 0) "${item.title} · missing" else "${item.title} · $n", chosen = split.target == i, given = n > 0) { split.target = i }
     }
   }
   VSpace(8)
@@ -761,10 +713,23 @@ fun SplitTool(
   if (split.textNotReady) SplitHint(Ocr.NOT_READY + " Until then, only photos and signatures are suggested.")
   val suggestions = pages.count { it in split.suggested }
   if (suggestions > 0) {
-    OutlinedButton(onClick = { split.acceptAll(pages) }, enabled = idle, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
-      Icon(AppIcons.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-      Spacer(Modifier.width(6.dp))
-      Text("Accept all suggestions ($suggestions)")
+    AppCard(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+      Row(Modifier.padding(start = 14.dp, end = 10.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(AppIcons.Spark, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(10.dp))
+        Text(
+          buildAnnotatedString {
+            withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("$suggestions suggestion${if (suggestions == 1) "" else "s"}") }
+            append(" ready to check")
+          },
+          fontSize = 13.sp,
+          color = DocReadyColors.extra.text2,
+          modifier = Modifier.weight(1f),
+        )
+        Button(onClick = { split.acceptAll(pages) }, enabled = idle, modifier = Modifier.height(44.dp), contentPadding = PaddingValues(horizontal = 14.dp)) {
+          Text("Accept all", fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
+        }
+      }
     }
   }
   SplitPages(split, pages, preset, onEdit, idle, duplicates)
@@ -790,7 +755,7 @@ fun SplitTool(
   }
 
   VSpace(14)
-  Button(onClick = { split.makeAll(pages) }, enabled = idle, modifier = Modifier.fillMaxWidth()) { Text("Make all") }
+  // ("Make all" is in the bottom bar, with Edit pages)
   if (split.busy != null) BusyRow(split.busy ?: "")
   ErrorText(split.error)
 
@@ -854,44 +819,58 @@ private fun SplitPages(split: SplitState, pages: List<PdfPage>, preset: Preset?,
   }
   duplicates?.let { DuplicatesBar(it, enabled = idle) }
   val sameAs = duplicates?.sameAs ?: emptyList()
-  FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+  FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
     pages.forEachIndexed { n, page ->
       val isSelected = page in split.selected
       val item = split.assigned[page]?.let { preset?.items?.getOrNull(it) }
-      Column(Modifier.width(92.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Surface(
-          onClick = { split.toggle(page) },
-          shape = RoundedCornerShape(8.dp),
-          border = BorderStroke(
-            if (isSelected) 3.dp else 1.dp,
-            if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-          ),
-          modifier = Modifier.size(width = 84.dp, height = 112.dp),
-        ) {
-          (split.thumbs[page] ?: page.thumb)?.let {
-            Image(it, contentDescription = "Page ${n + 1}", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(2.dp))
+      val hint = if (item == null) split.suggested[page]?.let { preset?.items?.getOrNull(it) } else null
+      val extra = DocReadyColors.extra
+      // given: green; a suggestion to check: dashed amber; selected: a thick green line
+      val border = when {
+        isSelected -> BorderStroke(3.dp, MaterialTheme.colorScheme.primary)
+        item != null -> BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+        hint != null -> null
+        else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+      }
+      Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = border,
+        modifier = Modifier.width(104.dp).then(if (border == null) Modifier.dashedBorder(extra.warningBorder, 12.dp) else Modifier),
+      ) {
+        Column(Modifier.padding(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+          Box(
+            Modifier.fillMaxWidth().height(112.dp).background(MaterialTheme.colorScheme.background, RoundedCornerShape(8.dp))
+              .clickable(enabled = true, onClickLabel = if (isSelected) "Unselect page ${n + 1}" else "Select page ${n + 1}") { split.toggle(page) },
+          ) {
+            (split.thumbs[page] ?: page.thumb)?.let {
+              Image(it, contentDescription = "Page ${n + 1}", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(2.dp))
+            }
+            sameAs.getOrNull(n)?.let { of ->
+              Text(
+                "Looks like ${of + 1}",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = extra.onWarningContainer,
+                modifier = Modifier.align(Alignment.BottomStart).padding(5.dp).background(extra.warningContainer, RoundedCornerShape(7.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
+              )
+            }
+            // the pencil: the page editor, before or after giving the page
+            IconButton(onClick = { onEdit(n) }, enabled = idle, modifier = Modifier.align(Alignment.TopEnd).size(44.dp)) {
+              Icon(AppIcons.Edit, contentDescription = "Edit page ${n + 1}", modifier = Modifier.size(16.dp))
+            }
           }
+          Text(
+            "${n + 1} · ${item?.title ?: "not given"}",
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (item != null) extra.onSuccessContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+          split.recipeFor(page)?.beautyBadge()?.let { BeautyBadge(it) }
+          if (hint != null) SuggestionBadge(hint.title, onAccept = { split.accept(page) }, onReject = { split.reject(page) }, enabled = idle)
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Text("${n + 1}", style = MaterialTheme.typography.labelSmall)
-          // the pencil: the page editor, before or after giving the page
-          IconButton(onClick = { onEdit(n) }, enabled = idle, modifier = Modifier.size(32.dp)) {
-            Icon(AppIcons.Edit, contentDescription = "Edit page ${n + 1}", modifier = Modifier.size(16.dp))
-          }
-        }
-        Text(
-          item?.title ?: "not used",
-          style = MaterialTheme.typography.labelSmall,
-          fontWeight = if (item != null) FontWeight.SemiBold else FontWeight.Normal,
-          color = if (item != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          textAlign = TextAlign.Center,
-        )
-        split.recipeFor(page)?.beautyBadge()?.let { BeautyBadge(it) }
-        sameAs.getOrNull(n)?.let { DuplicateBadge(it) }
-        val hint = if (item == null) split.suggested[page]?.let { preset?.items?.getOrNull(it) } else null
-        if (hint != null) SuggestionBadge(hint.title, onAccept = { split.accept(page) }, onReject = { split.reject(page) }, enabled = idle)
       }
     }
   }
@@ -939,29 +918,69 @@ private fun SaveToStudent(split: SplitState) {
 /** A suggested item on a page: its name, ✓ to give the page to it, ✕ to say it is not */
 @Composable
 private fun SuggestionBadge(title: String, onAccept: () -> Unit, onReject: () -> Unit, enabled: Boolean) {
-  Surface(
-    shape = RoundedCornerShape(8.dp),
-    color = MaterialTheme.colorScheme.secondaryContainer,
-    modifier = Modifier.padding(top = 2.dp),
-  ) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(top = 3.dp)) {
-      Text(
-        "$title?",
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSecondaryContainer,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
-        textAlign = TextAlign.Center,
-        modifier = Modifier.padding(horizontal = 4.dp),
-      )
-      Row {
-        IconButton(onClick = onAccept, enabled = enabled, modifier = Modifier.size(34.dp)) {
-          Icon(AppIcons.Check, contentDescription = "Give this page to $title", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-        }
-        IconButton(onClick = onReject, enabled = enabled, modifier = Modifier.size(34.dp)) {
-          Icon(AppIcons.Close, contentDescription = "Not $title", modifier = Modifier.size(18.dp))
-        }
+  val extra = DocReadyColors.extra
+  Row(verticalAlignment = Alignment.CenterVertically) {
+    Text("$title?", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = extra.onWarningContainer, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+    // (44 dp to touch, 30 dp to see)
+    IconButton(onClick = onAccept, enabled = enabled, modifier = Modifier.size(36.dp)) {
+      Box(Modifier.size(30.dp).background(MaterialTheme.colorScheme.primary, CircleShape), contentAlignment = Alignment.Center) {
+        Icon(AppIcons.Check, contentDescription = "Give this page to $title", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(16.dp))
       }
+    }
+    IconButton(onClick = onReject, enabled = enabled, modifier = Modifier.size(36.dp)) {
+      Box(Modifier.size(30.dp).border(1.dp, MaterialTheme.colorScheme.outline, CircleShape), contentAlignment = Alignment.Center) {
+        Icon(AppIcons.Close, contentDescription = "Not $title", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
+      }
+    }
+  }
+}
+
+/** The preset as a field: "Preset  B.Ed admission (NU)  ⌄", a menu of presets (and New preset) */
+@Composable
+private fun PresetField(presets: List<Preset>, chosen: Preset?, onPick: (Preset) -> Unit, onNew: () -> Unit) {
+  var open by remember { mutableStateOf(false) }
+  Box {
+    Surface(
+      onClick = { open = true },
+      shape = RoundedCornerShape(18.dp),
+      color = MaterialTheme.colorScheme.surface,
+      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+      modifier = Modifier.fillMaxWidth().height(48.dp),
+    ) {
+      Row(Modifier.padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("Preset", fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(10.dp))
+        Text(chosen?.name ?: "Choose the form's preset", fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Icon(AppIcons.Down, contentDescription = null, modifier = Modifier.size(20.dp))
+      }
+    }
+    androidx.compose.material3.DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+      for (p in presets) {
+        androidx.compose.material3.DropdownMenuItem(text = { Text(p.name) }, onClick = {
+          open = false
+          onPick(p)
+        })
+      }
+      androidx.compose.material3.DropdownMenuItem(text = { Text("+ New preset") }, onClick = {
+        open = false
+        onNew()
+      })
+    }
+  }
+}
+
+/** An item with its page count: given (green soft), missing (amber soft), chosen (dark) */
+@Composable
+private fun ItemCountChip(text: String, chosen: Boolean, given: Boolean, onClick: () -> Unit) {
+  val extra = DocReadyColors.extra
+  val (bg, fg) = when {
+    chosen -> MaterialTheme.colorScheme.onSurface to MaterialTheme.colorScheme.surface
+    given -> extra.successContainer to extra.onSuccessContainer
+    else -> extra.warningContainer to extra.onWarningContainer
+  }
+  Surface(onClick = onClick, shape = RoundedCornerShape(15.dp), color = bg, modifier = Modifier.height(36.dp)) {
+    Box(Modifier.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+      Text(text, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = fg, maxLines = 1)
     }
   }
 }

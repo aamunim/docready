@@ -117,6 +117,10 @@ dependencies {
     // the camera scan is Google's code scanner (its own screen: no camera permission in the app)
     implementation(libs.zxing.core)
     implementation(libs.code.scanner)
+    // Google Drive with the user's own Google account: authorization (drive.file scope only,
+    // no client secret, no server) and an upload queue that waits for a network
+    implementation(libs.play.services.auth)
+    implementation(libs.work.runtime)
 
     // plain JVM tests of the pure-Kotlin parts (./gradlew test); nothing of it goes in the app
     testImplementation(libs.junit)

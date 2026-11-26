@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
+import com.docready.aamunim.data.DriveState
 import java.util.UUID
 
 /**
@@ -24,7 +25,7 @@ import java.util.UUID
  */
 class StudentRepository(
   private val context: Context,
-  private val phone: SaveTarget,
+  private val phone: com.docready.aamunim.save.PhoneSaveTarget,
   private val settings: SettingsRepository,
   private val presets: PresetRepository,
 ) {
@@ -34,6 +35,19 @@ class StudentRepository(
 
   /** Most recently changed first */
   val students: StateFlow<List<Student>> = _students.asStateFlow()
+
+  /** What pages made for a student said about them (name, roll…), offered on their page until used */
+  private val _facts = MutableStateFlow<Map<String, List<com.docready.aamunim.imaging.Fact>>>(emptyMap())
+  val facts: StateFlow<Map<String, List<com.docready.aamunim.imaging.Fact>>> = _facts.asStateFlow()
+
+  fun offerFacts(id: String, list: List<com.docready.aamunim.imaging.Fact>) {
+    if (list.isEmpty()) return
+    _facts.value = _facts.value + (id to (list + (_facts.value[id] ?: emptyList())).distinct())
+  }
+
+  fun dropFact(id: String, f: com.docready.aamunim.imaging.Fact) {
+    _facts.value = _facts.value + (id to (_facts.value[id] ?: emptyList()).filter { it != f })
+  }
 
   fun get(id: String?): Student? = if (id == null) null else _students.value.firstOrNull { it.id == id }
 
@@ -54,15 +68,8 @@ class StudentRepository(
     var left = 0
     if (alsoDownloads) {
       for (f in s.files) {
-        val uri = Uri.parse(f.downloadsUri ?: continue)
-        val own = ownFile(uri)
-        val removed = try {
-          if (own != null) own.delete() || !own.exists() else context.contentResolver.delete(uri, null, null) > 0
-        } catch (_: Exception) {
-          false
-        }
         // (a file already gone by other means is not a failure)
-        if (!removed && stillThere(uri)) left++
+        if (!com.docready.aamunim.save.DownloadsFiles.delete(context, f.downloadsUri ?: continue)) left++
       }
     }
     dirOf(id).deleteRecursively()
@@ -70,31 +77,13 @@ class StudentRepository(
     left
   }
 
-  /**
-   * Android 8-9 saves (the app's own FileProvider link): the file itself. Its provider answers a
-   * query with a row even when the file is gone, so the file on disk is what tells.
-   */
-  private fun ownFile(uri: Uri): File? {
-    if (uri.authority != context.packageName + ".fileprovider") return null
-    val seg = uri.pathSegments
-    if (seg.size < 2) return null
-    val root = when (seg[0]) {
-      "saved" -> context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)?.let { File(it, "DocReady") }
-      "saved_internal" -> File(context.filesDir, "Downloads/DocReady")
-      else -> null
-    } ?: return null
-    val f = File(root, seg.drop(1).joinToString("/"))
-    // (never outside the folder the link stands for)
-    return f.takeIf { it.canonicalPath.startsWith(root.canonicalPath + File.separator) }
-  }
-
-  private fun stillThere(uri: Uri): Boolean = ownFile(uri)?.exists() ?: try {
-    context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { it.moveToFirst() } ?: false
-  } catch (_: SecurityException) {
-    // (not readable by the app any more, but it may well be there)
-    true
-  } catch (_: Exception) {
-    false
+  /** Any change to students' files (Google Drive states…); [change] returns the file as it is to be */
+  fun updateFiles(change: (Student, StudentFile) -> StudentFile) {
+    synchronized(lock) {
+      val list = _students.value
+      val next = list.map { s -> s.copy(files = s.files.map { f -> change(s, f) }) }
+      if (next != list) write(next)
+    }
   }
 
   /** One file removed from the student (its app copy; the Downloads copy stays) */
@@ -128,7 +117,8 @@ class StudentRepository(
       f.copy(file = kept, name = name)
     }
     // also in Downloads/DocReady/<student> (a failure there still keeps the app's copies)
-    val outcome = phone.save(context, named, s.name)
+    // Downloads / DocReady / Students / <name>: the student's folder (their files are its list)
+    val outcome = phone.saveTo(context, named, "Students/${s.name}", record = false)
     val links = (outcome as? SaveOutcome.Saved)?.files ?: emptyList()
     val now = System.currentTimeMillis()
     val added = named.mapIndexed { i, f ->
@@ -144,7 +134,12 @@ class StudentRepository(
       )
     }
     val fresh = get(id) ?: return@withContext outcome
-    save(fresh.copy(files = fresh.files + added, presetId = fresh.presetId ?: preset?.id))
+    // the student's folder has Auto upload on: the new files go in the Drive queue
+    val auto = "student:$id" in (context.applicationContext as com.docready.aamunim.DocReadyApplication).folderTree.data.value.autoUploadKeys &&
+      com.docready.aamunim.drive.DriveAuth.account.value.connected
+    val queued = if (auto) added.map { it.copy(drive = DriveState.QUEUED) } else added
+    save(fresh.copy(files = fresh.files + queued, presetId = fresh.presetId ?: preset?.id))
+    if (auto) com.docready.aamunim.drive.DriveQueue.schedule(context)
     outcome
   }
 

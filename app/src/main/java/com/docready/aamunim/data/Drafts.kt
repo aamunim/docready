@@ -334,6 +334,54 @@ class DraftHost(
     }
   }
 
+  /**
+   * New work handed to this tool ([newWork]: pages chosen for its item). When an unfinished
+   * draft is already here, the user is asked first ([replaceOffer]): continue it, or replace it
+   * with the new work; nothing is thrown away without that answer.
+   */
+  fun beginWith(newWork: suspend () -> Unit) {
+    scope.launch {
+      val d = try {
+        repo.load(key)
+      } catch (_: Exception) {
+        null
+      }
+      if (d == null) {
+        keeper.start()
+        newWork()
+      } else {
+        pendingWork = newWork
+        replaceOffer = d
+      }
+    }
+  }
+
+  /** An unfinished draft met new work: "Continue the unfinished one / Replace with the new pages" */
+  var replaceOffer by mutableStateOf<Draft?>(null)
+    private set
+  private var pendingWork: (suspend () -> Unit)? = null
+
+  fun keepUnfinished() {
+    val d = replaceOffer ?: return
+    replaceOffer = null
+    pendingWork = null
+    scope.launch { bringBack(d) }
+  }
+
+  fun replaceWithNew() {
+    replaceOffer = null
+    val work = pendingWork
+    pendingWork = null
+    scope.launch {
+      try {
+        repo.discard(key)
+      } catch (_: Exception) {
+      }
+      keeper.start()
+      work?.invoke()
+    }
+  }
+
   private suspend fun bringBack(d: Draft) {
     val ok = try {
       restore(d)

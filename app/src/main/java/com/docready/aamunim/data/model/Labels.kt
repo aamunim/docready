@@ -45,7 +45,7 @@ fun PresetItem.summary(): String {
   parts.add(maxKb?.let { "max ${kbText(it)}" } ?: "no size limit")
   parts.add(format.name)
   if (kind == ItemKind.PHOTO && background != null) parts.add(background.label.lowercase() + " background")
-  pagesHint?.takeIf { it.isNotBlank() }?.let { parts.add("pages $it") }
+  if (kind == ItemKind.DOCUMENT) parts.add(PageLimits.describe(pageRange))
   if (!required) parts.add("optional")
   return parts.joinToString(" · ")
 }

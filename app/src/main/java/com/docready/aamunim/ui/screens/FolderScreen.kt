@@ -99,7 +99,7 @@ fun FolderScreen(name: String, onBack: () -> Unit) {
         item { Text("No files in this folder.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
       }
       items(files, key = { it.uri }) { f ->
-        Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
+        Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
           Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             IconTile(
               if (f.mime == "application/pdf") AppIcons.Pages else AppIcons.Image,

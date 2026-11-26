@@ -10,6 +10,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -333,7 +335,7 @@ fun PresetQrImportScreen(onBack: () -> Unit, onImported: (String) -> Unit) {
         .addOnFailureListener { e ->
           if ((e as? MlKitException)?.errorCode == MlKitException.UNAVAILABLE) {
             // its module not downloaded yet (a fresh install): asked for now, by Play services
-            // itself (the app has no network permission)
+            // itself
             askForScanner(options)
             vm.error = "The scanner is getting ready (Google Play is downloading it). Try again in a minute, or use “From a picture”."
           } else {
@@ -449,5 +451,93 @@ fun PresetQrImportScreen(onBack: () -> Unit, onImported: (String) -> Unit) {
         }) { Text("Keep both") }
       },
     )
+  }
+}
+
+// ---------------------------------------------------------------- the QR sheet (Presets list)
+
+/**
+ * A preset's QR code(s) in a sheet over the Presets list: the code black on white, dots for its
+ * parts (swipe for the next), Save QR image, Send as file.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+fun PresetQrSheet(preset: Preset, onDismiss: () -> Unit) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
+  var codes by remember(preset.id) { mutableStateOf<List<Pair<String, Bitmap>>?>(null) }
+  var error by remember(preset.id) { mutableStateOf<String?>(null) }
+  var saving by remember { mutableStateOf(false) }
+  LaunchedEffect(preset.id) {
+    try {
+      codes = withContext(Dispatchers.Default) { PresetQr.encode(preset).map { it to QrCodes.bitmap(it) } }
+    } catch (e: Throwable) {
+      error = messageOf(e, "The QR code could not be made.")
+    }
+  }
+  val list = codes
+  val pager = rememberPagerState { list?.size ?: 0 }
+  androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+    Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+      Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+          Text(preset.name, style = MaterialTheme.typography.titleMedium)
+          Text("Scan with DocReady on another phone", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        com.docready.aamunim.ui.components.CircleIconButton(com.docready.aamunim.ui.components.AppIcons.Close, "Close QR", onDismiss, filled = true)
+      }
+      VSpace(12)
+      when {
+        error != null -> ErrorText(error)
+        list == null -> BusyRow("Making the code…")
+        else -> {
+          HorizontalPager(pager, modifier = Modifier.size(220.dp)) { i ->
+            Box(
+              Modifier.fillMaxSize().background(Color.White, androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                .border(1.dp, MaterialTheme.colorScheme.outline, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)).padding(10.dp),
+              contentAlignment = Alignment.Center,
+            ) {
+              Image(list[i].second.asImageBitmap(), contentDescription = "QR code ${i + 1} of ${list.size}", contentScale = ContentScale.Fit, filterQuality = FilterQuality.None, modifier = Modifier.fillMaxSize())
+            }
+          }
+          VSpace(12)
+          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (list.size > 1) {
+              for (i in list.indices) {
+                val on = i == pager.currentPage
+                Box(Modifier.size(width = if (on) 18.dp else 6.dp, height = 6.dp).background(if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, androidx.compose.foundation.shape.RoundedCornerShape(3.dp)))
+              }
+            }
+            Text(
+              if (list.size == 1) "One code" else "Part ${pager.currentPage + 1} of ${list.size} · swipe for next",
+              style = MaterialTheme.typography.bodySmall,
+              fontWeight = FontWeight.SemiBold,
+              color = com.docready.aamunim.ui.theme.DocReadyColors.extra.text2,
+              modifier = Modifier.padding(start = 4.dp),
+            )
+          }
+          VSpace(14)
+          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+              onClick = {
+                saving = true
+                scope.launch {
+                  val r = try {
+                    saveQrImages(context.applicationContext as Application, preset, list)
+                  } catch (e: Throwable) {
+                    SaveOutcome.Failed(messageOf(e, "The QR image could not be saved."))
+                  }
+                  saving = false
+                  Toast.makeText(context, if (r is SaveOutcome.Saved) "Saved in ${r.where}" else (r as? SaveOutcome.Failed)?.message ?: "Saved", Toast.LENGTH_LONG).show()
+                }
+              },
+              enabled = !saving,
+              modifier = Modifier.weight(1f).height(46.dp),
+            ) { Text(if (saving) "Saving…" else "Save QR image") }
+            Button(onClick = { sharePreset(context, preset) }, modifier = Modifier.weight(1f).height(46.dp)) { Text("Send as file", fontWeight = FontWeight.Bold) }
+          }
+        }
+      }
+    }
   }
 }

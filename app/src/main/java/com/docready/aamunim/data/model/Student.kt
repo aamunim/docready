@@ -18,6 +18,13 @@ data class StudentFile(
   /** Its copy in Downloads/DocReady/<student> (a content link the app may delete) */
   val downloadsUri: String? = null,
   val savedAt: Long = 0L,
+  /** Google Drive: the file uploaded from this one (a new revision next time), and its state */
+  val driveFileId: String? = null,
+  val drive: com.docready.aamunim.data.DriveState = com.docready.aamunim.data.DriveState.NONE,
+  val driveError: String? = null,
+  /** An unfinished resumable upload: its session address, and the size it was started for */
+  val driveSession: String? = null,
+  val driveSessionSize: Long? = null,
 )
 
 /** A student (an applicant): the papers one form asks of them, made and kept together */

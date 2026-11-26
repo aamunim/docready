@@ -57,6 +57,23 @@ phone, with no sign-in:
 - **File names** (Accounts → File names): a pattern from `{name}` `{roll}` `{item}`
   `{preset}` `{date}` `{seq}`, a date format and a separator; Bangla names can be written in
   Latin letters ("রহিম উদ্দিন" → `Rahim_Uddin`). A preset can have its own pattern.
+- **Add to a preset item** (the preset's page, or a student's checklist: "Add"): any files in —
+  the scanner, gallery photos, PDFs and pictures from Files, or a share ("Use for a preset
+  item…"); every PDF page and picture is one page (up to 150). When more pages came in than the
+  item takes (1 page unless the preset says "Exactly N" / "Up to N" / "Any"), a page picker asks
+  which, in order (numbered; hold for a large view; "Looks like <item>?" from the same signs as
+  Split's suggestions, never chosen by itself); pages are never merged beyond the limit. The
+  chosen pages go to the item's own tool: Photo (face found and cut out, background, size, KB),
+  Signature (cut, clean, size, KB) or Scan for a document (page editor; a PDF's pages keep their
+  look), so the file always follows the item's rules; from a student it is added to them.
+- **Folders** (a tab): app-managed folders, nested, pinned, renamed; each saved file is a record
+  pointing at the file in Downloads / DocReady / <folder path> (nothing copied). Files go to the
+  folder chosen in the save sheet (remembered per preset; "Scans" by default), ZIPs to "ZIP
+  exports", students' files to Students / <student> (their own files are that folder). Search,
+  All / Students / Presets / Recent, sizes by kind, pinned cards, a 3-column file grid with
+  fits / close / too big; long-press to select (Move, Delete with "also from Downloads",
+  Share as ZIP, streamed); Add files, Share folder as ZIP; delete a folder keeping its files
+  (to Scans) or not. The older list of folders is read once into it and kept as it was.
 - **Students**: each applicant's name (any script), roll / registration, date of birth, notes
   and form preset. Their page is a checklist of the preset's items (done / missing / too big):
   tap an item to open the right tool for it, and "Add to <name>" puts the result in the
@@ -89,14 +106,17 @@ phone, with no sign-in:
 - **Share to / Open with DocReady**: photos and PDFs shared or opened from other apps open
   in PDF tools / Photo / Signature.
 
-The app is offline only: it has **no internet permission** and no analytics. All ML Kit models
+Everything is made on the phone, with no analytics. The only network use is the optional
+Google Drive upload (the user's own account; files they choose). All ML Kit models
 (text, faces, photo background, document and QR scanners) come through Google Play services,
 which downloads them itself (manifest `com.google.mlkit.vision.DEPENDENCIES`:
 `ocr,face,subject_segment,barcode_ui`), so none is inside the APK.
 
-Colours: deep green (#1B6B3A; #8FD19E in dark mode) on warm neutral greys, amber for
-warnings; no blue anywhere in the interface (the "Light blue" photo background is an output
-colour for form photos, not UI).
+Colours: deep green #1B6B3A (dark theme #8FD19E) on warm neutral greys (#F7F6F3 page, white
+cards, #E4DFD5 outlines), amber #B45309 for warnings, #B42318 for "too big"; no blue anywhere
+in the interface (the "Light blue" photo background is an output colour for form photos, not
+UI). Type: Manrope (titles) and Inter (text), bundled in `res/font` as Latin subsets (about
+310 KB; SIL Open Font License, texts in `licenses/`).
 
 The ML Kit
 models are delivered by Google Play services (the app stays small, and the scanner needs no
@@ -144,7 +164,8 @@ app/src/main/java/com/docready/aamunim/
              SignatureTools, PdfTools (PdfRenderer, NID page), Scanner (ML Kit scanner),
              SizeFixer (size check, Fix to fit)
   data/      presets, local folders, students, drafts, settings (JSON); file naming (Naming.kt)
-  save/      SaveTarget (PHONE, SHARE; GOOGLE_DRIVE and ITTC = "Coming soon"), Zipper
+  save/      SaveTarget (PHONE, SHARE), PhoneSaveTarget, DownloadsFiles, Zipper
+  drive/     DriveAuth, DriveClient, DriveQueue (Google Drive, optional)
   intake/    "Share to DocReady"
   ui/        theme, components (save sheet, crop box, icons), screens, navigation
 ```
@@ -152,16 +173,88 @@ app/src/main/java/com/docready/aamunim/
 The image code is ported from the DocReady Expo module (lead repo,
 `modules/doc-scan/android`), with the React Native parts removed.
 
+## Google Drive (optional, the user's own Google account)
+
+- **Settings → Google Drive → Connect**: Google Identity Services' `AuthorizationClient`
+  (`Identity.getAuthorizationClient(ctx).authorize(...)`), scope
+  `https://www.googleapis.com/auth/drive.file` only: DocReady sees only the files it creates.
+  A token is asked for per upload batch (Play services keeps it); a 401 clears it
+  (`GoogleAuthUtil.clearToken`) and asks again silently.
+- **Disconnect**: the account is forgotten first, the upload job (`drive-upload`) is
+  cancelled, and every waiting, uploading or failed file goes back to "not uploaded"
+  (unfinished resumable sessions dropped). The grant is revoked with Google's OAuth revoke
+  endpoint (`POST https://oauth2.googleapis.com/revoke`), and the token cleared from Play
+  services. (play-services-auth 21.3.0 has no `AuthorizationClient.revokeAccess`; that needs
+  21.4.0+, which could not be checked here.) Offline, revoking fails quietly: the user can
+  remove DocReady in their Google Account → Security → Third-party connections. While not
+  connected nothing is queued (Auto upload included) and the job does nothing.
+- **Uploads**: Drive REST v3 over HttpURLConnection; one request up to 5 MB, a resumable upload
+  above. Files go to My Drive / DocReady / <folder path> (students: DocReady / Students /
+  <name>); Drive folder ids are cached per local folder and made again when deleted on Drive.
+  A file uploaded before gets a new revision of the same Drive file. Each file DocReady creates
+  carries `appProperties {"docready_id": <record id>}`; before creating, DocReady looks for that
+  mark (`appProperties has { key='docready_id' and value='…' } and trashed = false`), so a retry
+  after a lost answer reuses the file instead of making a second one. A resumable upload's
+  session address is kept per file: a retry asks Drive where it stopped (`Content-Range:
+  bytes */<total>`) and goes on from the returned `Range`. The size sent is read from the file
+  at upload time, not the size recorded at saving.
+- **Errors**: a file gone from the phone (`FileNotFoundException`, `SecurityException`) is
+  failed for good with "Not on the phone any more". Only socket/timeout errors and Drive's
+  busy answers (408, 429, 5xx) are retried; other refusals are failed (Retry all queues them).
+- **Where**: the save sheet's "Also upload to Drive" (remembered per preset); a folder's menu
+  "Upload to Drive" and "Auto upload new files"; select mode's cloud button. Each file shows
+  uploaded (cloud), waiting (spinner) or failed (amber); Settings shows "N waiting · Retry all".
+- **Queue**: WorkManager, one unique job that needs a network, retried with exponential
+  backoff; nothing blocks the app, and offline the queue waits.
+- **Setting it up (once, by the owner of the Google Cloud project)**:
+  1. Google Cloud Console → APIs & Services → enable the **Google Drive API**.
+  2. OAuth consent screen: app name, support e-mail, the scope `.../auth/drive.file`
+     (non-sensitive); publish it (or add testers while testing).
+  3. Credentials → **OAuth client ID → Android**, package `com.docready.aamunim`, with the
+     **SHA-1 of the upload key** (`keytool -list -v -keystore <upload.jks>`); make a second
+     Android client with the **Play app-signing key's SHA-1** (Play Console → Test and release
+     → App integrity → App signing). The debug build (`com.docready.aamunim.debug`) needs its
+     own client with the debug key's SHA-1. No client secret is used or stored; there is no
+     server.
+- **Play Data safety**: "Files and docs: files you choose are sent to your Google Drive" —
+  collected: no (sent only to the user's own Drive, on their action), shared: no, encrypted
+  in transit: yes, optional.
+
+## ML Kit and network access (Data safety)
+
+The INTERNET permission is back (for Drive), so the ML Kit libraries can also reach the
+network. The app uses ML Kit through Google Play services (document scanner, face detection,
+subject segmentation, text recognition, code scanner). Google documents that ML Kit APIs send
+usage and diagnostic logs to Google (device and app information such as model, OS version,
+package and app version; API usage, performance and error metrics). They do not send the
+pictures or the recognised text. These are typically sent by the Firebase data transport
+library (`com.google.android.datatransport`: `TransportBackendDiscovery`,
+`JobInfoSchedulerService`, `AlarmManagerSchedulerBroadcastReceiver`), which the ML Kit
+dependencies merge into the manifest.
+
+**What this version does**: nothing is removed. The merged manifest could not be built here
+(Google Maven is not reachable from the build sandbox), so removing those components with
+`tools:node="remove"` could not be checked against ML Kit. Removing the scheduler service or
+receiver while the runtime still schedules uploads can crash the app (JobScheduler refuses a
+service that is not in the manifest).
+
+**For Play Data safety**: declare **App info and performance → Diagnostics** (and
+crash logs if Google's ML Kit disclosure lists them for the APIs used) as **collected**, for
+**analytics**, processed by Google as a service provider, not shared. Check this against
+Google's current "ML Kit data disclosure" page before submitting.
+
+**To opt out later (check on a device first)**: in `app/src/main/AndroidManifest.xml`, add
+
+```xml
+<service android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
+    tools:node="remove" />
+```
+
+Removing only the backend discovery service should make the runtime find no backend and drop
+the logs without scheduling anything. Then run the app's OCR, face, cut-out and QR scanner and
+check logcat for crashes before shipping. The Play services modules themselves run in Google
+Play services, which has its own network access either way.
+
 ## Later (not in this version)
 
-- **Google Drive (optional, personal)**: Google Identity Services `AuthorizationClient`
-  (`Identity.getAuthorizationClient(activity).authorize(...)`) with only the
-  `https://www.googleapis.com/auth/drive.file` scope (DocReady sees only files it creates),
-  uploads to a `DocReady` folder, queued while offline. Needs an **Android OAuth client** in
-  Google Cloud for package `com.docready.aamunim` with **both** SHA-1 fingerprints: the Play
-  app-signing key (Play Console → App integrity) and the upload key. Adds the INTERNET
-  permission. Implemented as a new `SaveTarget` (`GOOGLE_DRIVE`).
-- **ITTC account (optional, staff)**: sign-in to the ITTC server (Supabase), reusing ITTC
-  Phone's direct-mode sign-in code; the institute's presets, lead folders, uploads to the ITTC
-  Drive (`SaveTarget` `ITTC`). Server URL / anon key from CI secrets, never in the repo.
-- Lead folder screen (mockup "Folder"), upload queue with retry.
+- Nothing planned here for now (the ITTC sign-in was dropped).

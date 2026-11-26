@@ -2,10 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Phase 1 works fully offline: no network permission, even if a library asks for one -->
-    <uses-permission
-        android:name="android.permission.INTERNET"
-        tools:node="remove" />
+    <!-- Google Drive (optional, the user's own account): files the user chooses are uploaded.
+         Everything else works offline. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- the upload queue waits for a network (WorkManager) -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
         android:name=".DocReadyApplication"

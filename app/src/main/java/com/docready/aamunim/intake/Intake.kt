@@ -19,7 +19,15 @@ data class IncomingFile(val file: File, val name: String, val mime: String) {
   val isPreset: Boolean get() = mime == "application/json"
 }
 
-enum class IntakeTarget { PHOTO, SIGNATURE, PDF_TOOLS, SPLIT }
+enum class IntakeTarget {
+  PHOTO,
+  SIGNATURE,
+  PDF_TOOLS,
+  SPLIT,
+
+  /** "Use for a preset item…": the item chosen next, then its Add screen takes them */
+  ITEM,
+}
 
 /** Files shared to the app, waiting for a screen to take them; [target] null = not decided yet */
 data class IntakeRequest(val files: List<IncomingFile>, val skipped: Int, val target: IntakeTarget?)
@@ -61,6 +69,11 @@ object Intake {
 
   fun dismiss() {
     _request.value = null
+  }
+
+  /** Files waiting for [target] dropped (its screen closed without taking them) */
+  fun dismissIf(target: IntakeTarget) {
+    if (_request.value?.target == target) _request.value = null
   }
 
   /** A share's files copied into the app (blocking: call off the main thread); `second` = how many were skipped */

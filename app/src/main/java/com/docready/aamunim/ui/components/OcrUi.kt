@@ -62,6 +62,8 @@ private fun Student.has(kind: FactKind, value: String): Boolean = when (kind) {
 fun FactChips(studentId: String, facts: List<Fact>) {
   val app = LocalContext.current.docReady
   val students by app.students.students.collectAsState()
+  // (also offered on the student's page, until used)
+  androidx.compose.runtime.LaunchedEffect(facts) { app.students.offerFacts(studentId, facts) }
   val s = students.firstOrNull { it.id == studentId } ?: return
   val open = facts.filter { !s.has(it.kind, it.value) }
   if (open.isEmpty()) return

@@ -1,5 +1,14 @@
 package com.docready.aamunim.ui.screens
 
+import com.docready.aamunim.data.FolderLogic
+import com.docready.aamunim.ui.components.AppCard
+import com.docready.aamunim.ui.components.CircleIconButton
+import com.docready.aamunim.ui.components.FitState
+import com.docready.aamunim.ui.components.SlimProgress
+import com.docready.aamunim.ui.components.StatusBadge
+import com.docready.aamunim.ui.components.ProgressRing
+import com.docready.aamunim.ui.components.dashedBorder
+import androidx.compose.ui.unit.sp
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
@@ -99,7 +108,7 @@ private fun progress(s: Student, preset: Preset?): String? {
 private enum class StudentSort(val title: String) { RECENT("Recent"), NAME("Name") }
 
 @Composable
-fun StudentsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Unit) {
+fun StudentsScreen(onBack: (() -> Unit)?, onOpen: (String) -> Unit, onNew: () -> Unit) {
   val app = LocalContext.current.docReady
   val students by app.students.students.collectAsState()
   val presets by app.presets.presets.collectAsState()
@@ -110,12 +119,38 @@ fun StudentsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Un
       query.isBlank() || s.name.contains(query.trim(), ignoreCase = true) || (s.roll ?: "").contains(query.trim(), ignoreCase = true)
     }
     .let { list -> if (sort == StudentSort.NAME) list.sortedBy { it.name.lowercase() } else list }
-  Scaffold(topBar = { DocTopBar("Students", onBack, actions = { TextButton(onClick = onNew) { Text("+ New") } }) }) { padding ->
+  Scaffold(
+    topBar = { if (onBack != null) DocTopBar("Students", onBack) },
+    floatingActionButton = {
+      if (students.isNotEmpty()) {
+        androidx.compose.material3.ExtendedFloatingActionButton(
+          onClick = onNew,
+          shape = RoundedCornerShape(18.dp),
+          containerColor = MaterialTheme.colorScheme.primary,
+          contentColor = MaterialTheme.colorScheme.onPrimary,
+          icon = { Icon(AppIcons.Add, contentDescription = null) },
+          text = { Text("Add student", fontWeight = FontWeight.Bold) },
+        )
+      }
+    },
+  ) { padding ->
     LazyColumn(
       Modifier.padding(padding).fillMaxSize(),
-      contentPadding = PaddingValues(16.dp),
+      contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 96.dp),
       verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+      item {
+        Row(Modifier.fillMaxWidth().padding(top = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+          Text("Students", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
+          if (students.isNotEmpty()) {
+            CircleIconButton(
+              AppIcons.Sort,
+              "Sort: ${sort.title}. Tap to sort by ${if (sort == StudentSort.NAME) "recent" else "name"}",
+              onClick = { sort = if (sort == StudentSort.NAME) StudentSort.RECENT else StudentSort.NAME },
+            )
+          }
+        }
+      }
       if (students.isEmpty()) {
         item {
           Column(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -135,33 +170,105 @@ fun StudentsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Un
             value = query,
             onValueChange = { query = it },
             leadingIcon = { Icon(AppIcons.Search, contentDescription = null) },
-            placeholder = { Text("Search by name or roll") },
+            placeholder = { Text("Name, roll or registration") },
             singleLine = true,
+            shape = RoundedCornerShape(24.dp),
             modifier = Modifier.fillMaxWidth(),
           )
         }
-        item { ChoiceChips(StudentSort.entries.toList(), sort, { it.title }, { sort = it }) }
+        item {
+          // the counters: everyone, all ready, missing papers
+          val withPreset = students.mapNotNull { st -> presets.firstOrNull { it.id == st.presetId }?.let { st to it } }
+          val ready = withPreset.count { (st, p) -> doneOf(st, p).let { it.first == it.second } }
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Counter("${students.size}", "Students", CounterTone.PLAIN, Modifier.weight(1f))
+            Counter("$ready", "All ready", CounterTone.GREEN, Modifier.weight(1f))
+            Counter("${withPreset.size - ready}", "Missing papers", CounterTone.AMBER, Modifier.weight(1f))
+          }
+        }
         items(shown, key = { it.id }) { s ->
           val preset = presets.firstOrNull { it.id == s.presetId }
-          Surface(
-            onClick = { onOpen(s.id) },
-            shape = RoundedCornerShape(14.dp),
-            color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-            modifier = Modifier.fillMaxWidth(),
-          ) {
-            Column(Modifier.padding(14.dp)) {
-              Text(s.name, fontWeight = FontWeight.Bold)
-              val line = listOfNotNull(s.roll?.let { "Roll $it" }, preset?.name, progress(s, preset), "${s.files.size} file${if (s.files.size == 1) "" else "s"}")
-              Text(line.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-          }
+          StudentRow(s, preset) { onOpen(s.id) }
         }
         if (shown.isEmpty()) item { Text("No student matches.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
       }
     }
   }
 }
+
+/** (done, of how many) required items of [p] for [s] */
+private fun doneOf(s: Student, p: Preset): Pair<Int, Int> {
+  val required = p.items.filter { it.required }
+  return required.count { s.stateOf(it) == ItemState.DONE } to required.size
+}
+
+private enum class CounterTone { PLAIN, GREEN, AMBER }
+
+@Composable
+private fun Counter(value: String, label: String, tone: CounterTone, modifier: Modifier) {
+  val extra = DocReadyColors.extra
+  val (bg, fg) = when (tone) {
+    CounterTone.PLAIN -> MaterialTheme.colorScheme.surface to MaterialTheme.colorScheme.onSurface
+    CounterTone.GREEN -> extra.successContainer to extra.onSuccessContainer
+    CounterTone.AMBER -> extra.warningContainer to extra.onWarningContainer
+  }
+  Surface(
+    shape = RoundedCornerShape(16.dp),
+    color = bg,
+    border = if (tone == CounterTone.PLAIN) BorderStroke(1.dp, MaterialTheme.colorScheme.outline) else null,
+    modifier = modifier,
+  ) {
+    Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+      Text(value, fontFamily = com.docready.aamunim.ui.theme.Manrope, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, color = fg)
+      Text(label, fontSize = 11.5.sp, color = if (tone == CounterTone.PLAIN) MaterialTheme.colorScheme.onSurfaceVariant else fg, maxLines = 1)
+    }
+  }
+}
+
+/** A student: initials, name, roll and preset, a progress bar, and Ready / 3/5 / Set preset */
+@Composable
+private fun StudentRow(s: Student, preset: Preset?, onClick: () -> Unit) {
+  val extra = DocReadyColors.extra
+  val (done, total) = preset?.let { doneOf(s, it) } ?: (0 to 0)
+  val all = preset != null && done == total
+  AppCard(Modifier.fillMaxWidth(), onClick = onClick) {
+    Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+      Box(
+        Modifier.size(44.dp).background(if (all) extra.successContainer else extra.chip, CircleShape),
+        contentAlignment = Alignment.Center,
+      ) {
+        Text(
+          initials(s.name),
+          fontFamily = com.docready.aamunim.ui.theme.Manrope,
+          fontWeight = FontWeight.Bold,
+          fontSize = 15.sp,
+          color = if (all) extra.onSuccessContainer else extra.text2,
+        )
+      }
+      Spacer(Modifier.width(12.dp))
+      Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text(s.name, fontSize = 14.5.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        val meta = listOfNotNull(s.roll?.let { "Roll $it" } ?: s.registration?.let { "Reg $it" }, preset?.name ?: "No preset yet").joinToString(" · ")
+        Text(meta, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        SlimProgress(
+          if (total == 0) 0f else done.toFloat() / total,
+          Modifier.padding(top = 3.dp),
+          if (all) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
+        )
+      }
+      Spacer(Modifier.width(10.dp))
+      when {
+        preset == null -> StatusBadge("Set preset", FitState.NONE)
+        all -> StatusBadge("Ready", FitState.FITS)
+        else -> StatusBadge("$done/$total", FitState.CLOSE)
+      }
+    }
+  }
+}
+
+/** "SA" from "Student A" (any script: the first letters) */
+private fun initials(name: String): String =
+  name.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.take(2).joinToString("") { it.take(1).uppercase() }.ifEmpty { "?" }
 
 /** New student (id "new") or editing one; [onSaved] gets the student's id */
 @Composable
@@ -232,10 +339,14 @@ fun StudentScreen(
   onEdit: () -> Unit,
   /** Make item [index] of [presetId] with [tool] ("photo", "signature", "scan" or "pdf") */
   onMake: (tool: String, presetId: String, index: Int) -> Unit,
+  /** The student's folder in the Folders tab (by the student's id) */
+  onOpenFolder: (String) -> Unit = {},
 ) {
   val context = LocalContext.current
   val app = context.docReady
   val students by app.students.students.collectAsState()
+  val allFacts by app.students.facts.collectAsState()
+  var menu by remember { mutableStateOf(false) }
   val presets by app.presets.presets.collectAsState()
   val s = students.firstOrNull { it.id == id }
   val scope = rememberCoroutineScope()
@@ -262,7 +373,7 @@ fun StudentScreen(
           val naming = NameContext(preset = preset?.name, presetPattern = preset?.namePattern, student = s.name, roll = s.roll)
           val zip = Zipper.zip(context, copies, Naming.apply(app.settings.naming.value, naming, s.name, 1))
           copies.forEach { it.file.delete() }
-          if (save) app.saveTargets.phone.save(context, listOf(zip), s.name) else null to zip
+          if (save) app.saveTargets.phone.saveTo(context, listOf(zip), FolderLogic.ZIPS) else null to zip
         }
         when {
           outcome is SaveOutcome.Saved -> Toast.makeText(context, "Saved ${outcome.names.firstOrNull()} in ${outcome.where}", Toast.LENGTH_LONG).show()
@@ -280,49 +391,128 @@ fun StudentScreen(
     }
   }
 
+  /** A too-big file brought under its item's limit (the tools' fitting), then kept for the student */
+  fun fixToFit(item: com.docready.aamunim.data.model.PresetItem, index: Int) {
+    val f = s.fileFor(item) ?: return
+    val p = preset ?: return
+    busy = "Making it fit…"
+    scope.launch {
+      try {
+        val r = withContext(Dispatchers.Default) {
+          val out = FileNames.outputFile(context, f.name)
+          File(f.path).copyTo(out, overwrite = true)
+          val fixed = com.docready.aamunim.imaging.SizeFixer.fit(context, ReadyFile(out, f.name, f.mime, item.maxKb, exactSize = item.kind != ItemKind.DOCUMENT, itemIndex = index))
+          if (item.maxKb != null && fixed.file.length() > item.maxKb * 1024L) throw IllegalStateException("It can't get under ${item.maxKb} KB, even at the lowest readable quality.")
+          fixed
+        }
+        app.students.attach(s.id, listOf(r), p)
+        Toast.makeText(context, "${item.title} fits now.", Toast.LENGTH_SHORT).show()
+      } catch (e: Throwable) {
+        Toast.makeText(context, e.message ?: "It could not be made smaller.", Toast.LENGTH_LONG).show()
+      } finally {
+        busy = null
+      }
+    }
+  }
+
   Scaffold(
-    topBar = {
-      DocTopBar(
-        s.name,
-        onBack,
-        subtitle = listOfNotNull(s.roll?.let { "Roll $it" }, s.registration?.let { "Reg $it" }, s.dob?.let { "Born $it" }).joinToString(" · ").ifEmpty { null },
-        actions = {
-          IconButton(onClick = onEdit) { Icon(AppIcons.Edit, contentDescription = "Edit student") }
-          IconButton(onClick = { confirmDelete = true }) { Icon(AppIcons.Delete, contentDescription = "Delete student") }
-        },
-      )
-    },
     bottomBar = {
-      if (s.files.isNotEmpty()) {
-        BottomActions {
-          OutlinedButton(onClick = { zipAll(save = false) }, enabled = busy == null, modifier = Modifier.height(52.dp)) { Text("Share all as ZIP") }
-          Button(onClick = { zipAll(save = true) }, enabled = busy == null, modifier = Modifier.weight(1f).height(52.dp)) { Text("Save as ZIP") }
+      BottomActions {
+        OutlinedButton(onClick = { onOpenFolder(s.id) }, modifier = Modifier.weight(1f).height(50.dp)) {
+          Icon(AppIcons.FolderNav, contentDescription = null, modifier = Modifier.size(18.dp))
+          Spacer(Modifier.width(6.dp))
+          Text("Open folder")
+        }
+        Button(onClick = { zipAll(save = false) }, enabled = busy == null && s.files.isNotEmpty(), modifier = Modifier.weight(1f).height(50.dp)) {
+          Icon(AppIcons.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+          Spacer(Modifier.width(6.dp))
+          Text("Share all as ZIP")
         }
       }
     },
   ) { padding ->
-    Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-      s.notes?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-      busy?.let { BusyRow(it) }
-      if (preset == null) {
-        SectionLabel("Checklist")
-        Text(
-          if (presets.isEmpty()) "Make a preset for the form first (Presets), then link it here." else "Link the form's preset to see what is still missing:",
-          style = MaterialTheme.typography.bodyMedium,
-        )
-        Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-          for (p in presets) FilterChip(selected = false, onClick = { app.students.save(s.copy(presetId = p.id)) }, label = { Text(p.name) })
+    Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
+      // back · edit · more
+      Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onBack, modifier = Modifier.size(44.dp)) { Icon(AppIcons.Back, contentDescription = "Back to Students") }
+        Spacer(Modifier.weight(1f))
+        IconButton(onClick = onEdit, modifier = Modifier.size(44.dp)) { Icon(AppIcons.Edit, contentDescription = "Edit student") }
+        Box {
+          IconButton(onClick = { menu = true }, modifier = Modifier.size(44.dp)) { Icon(AppIcons.More, contentDescription = "More options") }
+          androidx.compose.material3.DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            androidx.compose.material3.DropdownMenuItem(text = { Text("Save all as ZIP") }, enabled = s.files.isNotEmpty(), onClick = {
+              menu = false
+              zipAll(save = true)
+            })
+            androidx.compose.material3.DropdownMenuItem(text = { Text("Delete student", color = MaterialTheme.colorScheme.error) }, onClick = {
+              menu = false
+              confirmDelete = true
+            })
+          }
         }
-      } else {
-        SectionLabel("${preset.name} · ${progress(s, preset)}")
-        preset.items.forEachIndexed { i, item -> ChecklistRow(s, i, item, onMake = { tool -> onMake(tool, preset.id, i) }) }
       }
-      SectionLabel("Files (${s.files.size})")
-      if (s.files.isEmpty()) {
-        Text("Files made for this student are kept here and in Downloads / DocReady / ${s.name}.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      // the ring, the name, roll / reg, the preset
+      val (done, total) = preset?.let { doneOf(s, it) } ?: (0 to 0)
+      Row(Modifier.padding(horizontal = 20.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        ProgressRing(if (total == 0) 0f else done.toFloat() / total, if (preset == null) "–" else "$done/$total")
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+          Text(s.name, style = MaterialTheme.typography.headlineSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+          listOfNotNull(s.roll?.let { "Roll $it" }, s.registration?.let { "Reg $it" }, s.dob?.let { "Born $it" }).joinToString(" · ").takeIf { it.isNotEmpty() }?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+          }
+          Text("Preset: ${preset?.name ?: "none yet"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
       }
-      for (f in s.files.sortedByDescending { it.savedAt }) {
-        StudentFileRow(f, onRemove = { app.students.removeFile(s.id, f) })
+      Column(Modifier.padding(horizontal = 20.dp)) {
+        // what a page said about them (from OCR): offered, never filled in without a tap
+        val fact = allFacts[s.id]?.firstOrNull { f -> !hasFact(s, f) }
+        if (fact != null) {
+          Row(
+            Modifier.fillMaxWidth().padding(top = 14.dp).background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp))
+              .dashedBorder(MaterialTheme.colorScheme.outline, 16.dp).padding(start = 12.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Icon(AppIcons.Spark, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+            Text("Found on a page: ${fact.kind.title} ${fact.value}", style = MaterialTheme.typography.bodySmall, color = DocReadyColors.extra.text2, modifier = Modifier.weight(1f))
+            TextButton(onClick = { app.students.dropFact(s.id, fact) }) { Text("No") }
+            Button(
+              onClick = {
+                app.students.save(withFact(s, fact))
+                app.students.dropFact(s.id, fact)
+              },
+              colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer),
+            ) { Text("Use", fontWeight = FontWeight.Bold) }
+          }
+        }
+        s.notes?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 10.dp)) }
+        busy?.let { BusyRow(it) }
+        if (preset == null) {
+          SectionLabel("Checklist")
+          Text(
+            if (presets.isEmpty()) "Make a preset for the form first (Presets), then link it here." else "Link the form's preset to see what is still missing:",
+            style = MaterialTheme.typography.bodyMedium,
+          )
+          Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (p in presets) FilterChip(selected = false, onClick = { app.students.save(s.copy(presetId = p.id)) }, label = { Text(p.name) })
+          }
+        } else {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionLabel("Checklist", Modifier.weight(1f))
+            Text("Tap to add or fix", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+          }
+          preset.items.forEachIndexed { i, item ->
+            ChecklistRow(s, item, onAdd = { onMake("item-add", preset.id, i) }, onFix = { fixToFit(item, i) }, enabled = busy == null)
+          }
+        }
+        SectionLabel("Files (${s.files.size})")
+        if (s.files.isEmpty()) {
+          Text("Files made for this student are kept here and in Downloads / DocReady / ${s.name}.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        for (f in s.files.sortedByDescending { it.savedAt }) {
+          StudentFileRow(f, onRemove = { app.students.removeFile(s.id, f) })
+        }
       }
     }
   }
@@ -361,41 +551,81 @@ fun StudentScreen(
   }
 }
 
+/** The student already has this value */
+private fun hasFact(s: Student, f: com.docready.aamunim.imaging.Fact): Boolean = when (f.kind) {
+  com.docready.aamunim.imaging.FactKind.NAME -> s.name.equals(f.value, ignoreCase = true)
+  com.docready.aamunim.imaging.FactKind.ROLL -> s.roll == f.value
+  com.docready.aamunim.imaging.FactKind.REG -> s.registration == f.value
+  com.docready.aamunim.imaging.FactKind.DOB -> s.dob == f.value
+}
+
+private fun withFact(s: Student, f: com.docready.aamunim.imaging.Fact): Student = when (f.kind) {
+  com.docready.aamunim.imaging.FactKind.NAME -> s.copy(name = f.value.take(80))
+  com.docready.aamunim.imaging.FactKind.ROLL -> s.copy(roll = f.value.take(40))
+  com.docready.aamunim.imaging.FactKind.REG -> s.copy(registration = f.value.take(40))
+  com.docready.aamunim.imaging.FactKind.DOB -> s.copy(dob = f.value.take(20))
+}
+
+/**
+ * One item of the checklist: ✓ done, ! too big (Fix to fit), + missing (Add). Tapping the row
+ * opens Add for the item (any files; pages picked when more than it takes).
+ */
 @Composable
-private fun ChecklistRow(s: Student, index: Int, item: com.docready.aamunim.data.model.PresetItem, onMake: (String) -> Unit) {
+private fun ChecklistRow(s: Student, item: com.docready.aamunim.data.model.PresetItem, onAdd: () -> Unit, onFix: () -> Unit, enabled: Boolean) {
   val extra = DocReadyColors.extra
   val state = s.stateOf(item)
   val f = s.fileFor(item)
-  val (color, word) = when (state) {
-    ItemState.DONE -> extra.success to "Done"
-    ItemState.TOO_BIG -> MaterialTheme.colorScheme.error to "Too big"
-    ItemState.MISSING -> (if (item.required) extra.onWarningContainer else MaterialTheme.colorScheme.onSurfaceVariant) to (if (item.required) "Missing" else "Optional")
+  val (mark, markBg, markFg) = when (state) {
+    ItemState.DONE -> Triple("✓", extra.successContainer, extra.onSuccessContainer)
+    ItemState.TOO_BIG -> Triple("!", MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.error)
+    ItemState.MISSING -> Triple("+", extra.warningContainer, extra.onWarningContainer)
+  }
+  val rule = when {
+    state == ItemState.TOO_BIG && f != null -> item.summary() + " · now " + bytesText(f.bytes)
+    else -> item.summary()
+  }
+  val border = when (state) {
+    ItemState.TOO_BIG -> BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f))
+    ItemState.MISSING -> BorderStroke(0.dp, androidx.compose.ui.graphics.Color.Transparent)
+    else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
   }
   Surface(
-    shape = RoundedCornerShape(14.dp),
+    onClick = onAdd,
+    enabled = enabled,
+    shape = RoundedCornerShape(18.dp),
     color = MaterialTheme.colorScheme.surface,
-    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+    border = border,
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(bottom = 10.dp)
+      .then(if (state == ItemState.MISSING) Modifier.dashedBorder(extra.warningBorder, 18.dp) else Modifier),
   ) {
-    Column(Modifier.padding(12.dp)) {
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(12.dp).background(color, CircleShape))
-        Spacer(Modifier.width(8.dp))
-        Text(item.title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-        Text(word, color = color, style = MaterialTheme.typography.labelLarge)
+    Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+      Box(Modifier.size(36.dp).background(markBg, CircleShape), contentAlignment = Alignment.Center) {
+        Text(mark, color = markFg, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
       }
-      Text(item.summary(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-      f?.let { Text("${it.name} · ${bytesText(it.bytes)}", style = MaterialTheme.typography.bodySmall, color = color) }
-      Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        val again = if (state == ItemState.MISSING) "" else " again"
-        when (item.kind) {
-          ItemKind.PHOTO -> Button(onClick = { onMake("photo") }) { Text("Make photo$again") }
-          ItemKind.SIGNATURE -> Button(onClick = { onMake("signature") }) { Text("Make signature$again") }
-          ItemKind.DOCUMENT -> {
-            Button(onClick = { onMake("scan") }) { Text("Scan$again") }
-            OutlinedButton(onClick = { onMake("pdf") }) { Text("From PDF / photos") }
-          }
-        }
+      Spacer(Modifier.width(12.dp))
+      Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(item.title + if (!item.required) " (optional)" else "", fontSize = 14.5.sp, fontWeight = FontWeight.Bold)
+        Text(rule, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        f?.let { Text(it.name, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+      }
+      Spacer(Modifier.width(8.dp))
+      when (state) {
+        ItemState.DONE -> Text("Done", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = extra.onSuccessContainer)
+        ItemState.TOO_BIG -> Button(
+          onClick = onFix,
+          enabled = enabled,
+          colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError),
+          contentPadding = PaddingValues(horizontal = 12.dp),
+          modifier = Modifier.height(44.dp),
+        ) { Text("Fix to fit", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+        ItemState.MISSING -> Button(
+          onClick = onAdd,
+          enabled = enabled,
+          contentPadding = PaddingValues(horizontal = 14.dp),
+          modifier = Modifier.height(44.dp),
+        ) { Text("Add", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
       }
     }
   }

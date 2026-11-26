@@ -1,5 +1,15 @@
 package com.docready.aamunim.ui.screens
 
+import com.docready.aamunim.ui.components.dashedBorder
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.border
+import androidx.compose.foundation.background
 import kotlinx.coroutines.delay
 import com.docready.aamunim.ui.components.animationsEnabled
 import com.docready.aamunim.ui.components.ScanAnimationCard
@@ -59,6 +69,12 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.docready.aamunim.data.FileNames
+import com.docready.aamunim.intake.Handoff
+import com.docready.aamunim.data.model.PageLimits
+import com.docready.aamunim.data.model.pageRange
+import com.docready.aamunim.ui.components.PagePickerDialog
+import com.docready.aamunim.intake.HandoffPage
+import com.docready.aamunim.intake.PageKind
 import com.docready.aamunim.data.Draft
 import com.docready.aamunim.data.DraftHost
 import com.docready.aamunim.data.DraftPage
@@ -133,6 +149,8 @@ class Page(
   val recipe: PageRecipe = PageRecipe.Document,
   val warning: String? = null,
   val checkCorners: Boolean = false,
+  /** A PDF's page: [file] is the PDF and this its page (made into a picture only when needed) */
+  val pdfPage: Int = -1,
 )
 
 class ScanViewModel(app: Application, private val presetId: String?, private val itemIndex: Int, private val studentId: String? = null, resume: Boolean = false) : AndroidViewModel(app) {
@@ -161,6 +179,7 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
 
   /** The limits of a preset's document item, picked on this screen */
   fun applyItem(it: PresetItem) {
+    limitItem = it
     format = if (it.format == OutputFormat.JPG) OutputFormat.JPG else OutputFormat.PDF
     maxKbText = it.maxKb?.toString() ?: ""
     result = null
@@ -169,37 +188,82 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
   var result by mutableStateOf<FilesResult?>(null)
   var error by mutableStateOf<String?>(null)
 
+  /** The pages being cleaned: how many, how many done, what the last one got */
+  var cleanTotal by mutableStateOf(0)
+    private set
+  var cleanDone by mutableStateOf(0)
+    private set
+  var cleanSteps by mutableStateOf<List<String>>(emptyList())
+    private set
+
   /** The page being cleaned right now, for the scanning animation (null = none) */
   var anim by mutableStateOf<ScanAnim?>(null)
     private set
   private var animKey = 0
 
   /** The scanner's pages, copied in (they are added after the pages already there) */
-  fun addScanned(uris: List<Uri>) = addPages(uris, photos = false)
+  fun addScanned(uris: List<Uri>) = addPages(uris.take(30).map { u -> { FileNames.copyIn(ctx, u, "jpg") } to PageKind.SCANNED })
 
   /** Photos of papers added as pages: their corners are looked for, to be checked by the user */
-  fun addPhotos(uris: List<Uri>) = addPages(uris, photos = true)
+  fun addPhotos(uris: List<Uri>) = addPages(uris.take(30).map { u -> { FileNames.copyIn(ctx, u, "img") } to PageKind.PHOTO })
 
-  private fun addPages(uris: List<Uri>, photos: Boolean) {
-    if (uris.isEmpty()) return
+  /** Pages chosen for this item in the page picker (a PDF's pages keep their own look) */
+  fun addHandedOver(list: List<HandoffPage>) = addPages(list.map { p -> { p.file } to p.kind }, list.map { it.pdfPage })
+
+  /** The item whose page limit applies (also one picked on this screen) */
+  private var limitItem by mutableStateOf(item)
+
+  /** The item's name, for the page picker */
+  val limitTitle: String get() = limitItem?.title ?: "This item"
+
+  /** The pages this item takes (no item: no limit) */
+  val range: IntRange? get() = limitItem?.pageRange
+
+  /**
+   * The page's picture at [side] (a PDF's page made from the PDF; a picture loaded): its
+   * source is never changed
+   */
+  private fun load(f: File, pdfPage: Int, side: Int): Bitmap =
+    if (pdfPage >= 0) PdfTools.renderPage(f, pdfPage, side) else DocTools.load(ctx, Uri.fromFile(f), side)
+
+  private fun addPages(all: List<Pair<() -> File, PageKind>>, pdfPages: List<Int> = emptyList()) {
+    if (all.isEmpty()) return
+    // never more pages than the item takes: the rest are not added (Add on the item picks)
+    val room = range?.let { it.last - pages.size } ?: Int.MAX_VALUE
+    val items = all.take(maxOf(0, room))
+    if (items.size < all.size) {
+      val r = range!!
+      error = if (items.isEmpty()) {
+        "This item takes ${PageLimits.describe(r)}: remove a page first, or use Add on the item to choose."
+      } else {
+        "This item takes ${PageLimits.describe(r)}: only ${items.size} more ${if (items.size == 1) "was" else "were"} added."
+      }
+      if (items.isEmpty()) return
+    }
     viewModelScope.launch {
       busy = "Reading the pages…"
       error = null
       result = null
-      val list = uris.take(30)
+      val list = items.take(PdfTools.PAGE_LIMIT)
+      cleanTotal = list.size
+      cleanDone = 0
+      cleanSteps = emptyList()
       val animated = animationsEnabled(ctx)
       try {
-        for ((n, u) in list.withIndex()) {
+        for ((n, item) in list.withIndex()) {
+          val (fileOf, kind) = item
+          val photos = kind == PageKind.PHOTO
+          val pdfPage = pdfPages.getOrNull(n) ?: -1
           // the raw page first: the scanning animation sweeps over it while it is cleaned
           val (f, raw) = withContext(Dispatchers.Default) {
-            val file = FileNames.copyIn(ctx, u, if (photos) "img" else "jpg")
-            file to DocTools.load(ctx, Uri.fromFile(file), PREVIEW).asImageBitmap()
+            val file = fileOf()
+            file to load(file, pdfPage, PREVIEW).asImageBitmap()
           }
           val label = if (list.size == 1) "Cleaning the page…" else "Cleaning page ${n + 1} of ${list.size}…"
           anim = ScanAnim(animKey++, raw, null, label)
           val (page, cleaned) = withContext(Dispatchers.Default) {
             val quad = if (photos) {
-              val b = DocTools.load(ctx, Uri.fromFile(f), 1600)
+              val b = load(f, pdfPage, 1600)
               try {
                 DocTools.findPaper(b)
               } finally {
@@ -208,16 +272,27 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
             } else {
               null
             }
-            // new document pages: Magic (and the paper's corners on a photo)
-            val framed = PageRecipe.Document.copy(quad = quad?.toList())
-            // fingers holding the paper: painted out by default where found (never over a face)
-            val recipe = PageRenderer.withFingers(framed, fingersOn(f, framed))
+            // new document pages: Magic (and the paper's corners on a photo); a PDF's page as it was
+            val recipe = if (kind == PageKind.PDF) {
+              PageRecipe.Plain
+            } else {
+              val framed = PageRecipe.Document.copy(quad = quad?.toList())
+              // fingers holding the paper: painted out by default where found (never over a face)
+              PageRenderer.withFingers(framed, fingersOn(f, pdfPage, framed))
+            }
             // the real result, small: the animation's reveal and the page's tile
-            val shown = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), PREVIEW), recipe)
+            val shown = PageRenderer.render(load(f, pdfPage, PREVIEW), recipe)
             val tile = DocTools.scaleToMax(shown.copy(Bitmap.Config.ARGB_8888, false), 240).asImageBitmap()
-            Page(f, tile, recipe, qualityWarning(f), checkCorners = photos) to shown.asImageBitmap()
+            Page(f, tile, recipe, if (pdfPage >= 0) null else qualityWarning(f), checkCorners = photos, pdfPage = pdfPage) to shown.asImageBitmap()
           }
           pages.add(page)
+          cleanDone = n + 1
+          cleanSteps = buildList {
+            if (page.recipe.look == com.docready.aamunim.data.model.Look.MAGIC) add("Shadow removed")
+            if (page.recipe.look == com.docready.aamunim.data.model.Look.MAGIC) add("Paper evened")
+            if (page.recipe.fingers) add("Finger removed") else if (page.recipe.fingerBoxes.isNotEmpty()) add("Finger found")
+            if (page.recipe.isPlain) add("Kept as it was")
+          }
           anim = anim?.copy(after = cleaned, done = true, label = if (list.size == 1) "Page ready" else "Page ${n + 1} of ${list.size} ready")
           // (a moment to see the reveal and the tick; none when animations are off)
           // (only short batches and the last page pause: never slowing a long scan down)
@@ -233,8 +308,8 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
   }
 
   /** Fingers found on the page as it will be framed (a failure finds none) */
-  private fun fingersOn(f: File, r: PageRecipe): PageRenderer.FingerFind? = try {
-    PageRenderer.findFingers(DocTools.load(ctx, Uri.fromFile(f), 1600), r)
+  private fun fingersOn(f: File, pdfPage: Int, r: PageRecipe): PageRenderer.FingerFind? = try {
+    PageRenderer.findFingers(load(f, pdfPage, 1600), r)
   } catch (_: Throwable) {
     null
   }
@@ -245,9 +320,9 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
     result = null
     viewModelScope.launch {
       try {
-        val thumb = withContext(Dispatchers.Default) { pageThumb(page.file, r) }
+        val thumb = withContext(Dispatchers.Default) { pageThumb(page.file, page.pdfPage, r) }
         val at = pages.indexOf(page)
-        if (at >= 0) pages[at] = Page(page.file, thumb, r, page.warning, page.checkCorners)
+        if (at >= 0) pages[at] = Page(page.file, thumb, r, page.warning, page.checkCorners, page.pdfPage)
       } catch (e: Throwable) {
         error = messageOf(e, "The page could not be updated.")
       }
@@ -268,8 +343,8 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
   }
 
   /** The page as it will come out (its edits applied), small, for the list */
-  private fun pageThumb(f: File, recipe: PageRecipe): ImageBitmap? {
-    val b = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), 800), recipe)
+  private fun pageThumb(f: File, pdfPage: Int, recipe: PageRecipe): ImageBitmap? {
+    val b = PageRenderer.render(load(f, pdfPage, 800), recipe)
     return DocTools.scaleToMax(b, 240).asImageBitmap()
   }
 
@@ -280,7 +355,7 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
    */
   private fun prepared(p: Page): Bitmap = PdfTools.atBestSize { side ->
     // (straightening from corners takes a little more of the photo than the page it gives)
-    val b = DocTools.load(ctx, Uri.fromFile(p.file), if (p.recipe.quad != null) side + 600 else side)
+    val b = load(p.file, p.pdfPage, if (p.recipe.quad != null) side + 600 else side)
     DocTools.scaleToMax(PageRenderer.render(b, p.recipe, side), side)
   }
 
@@ -293,7 +368,7 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
     if (list.isEmpty()) return
     editor = PageEditorState(
       viewModelScope,
-      list.mapIndexed { i, p -> EditorPage("Page ${i + 1}", p.recipe) { side -> DocTools.load(ctx, Uri.fromFile(p.file), side) } },
+      list.mapIndexed { i, p -> EditorPage("Page ${i + 1}", p.recipe) { side -> load(p.file, p.pdfPage, side) } },
       start,
       EditorMode.DOCUMENT,
       onDone = { recipes -> applyRecipes(list, recipes) },
@@ -312,9 +387,9 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
       try {
         for (i in changed) {
           val p = list[i]
-          val thumb = withContext(Dispatchers.Default) { pageThumb(p.file, recipes[i]) }
+          val thumb = withContext(Dispatchers.Default) { pageThumb(p.file, p.pdfPage, recipes[i]) }
           val at = pages.indexOf(p)
-          if (at >= 0) pages[at] = Page(p.file, thumb, recipes[i], p.warning, checkCorners = false)
+          if (at >= 0) pages[at] = Page(p.file, thumb, recipes[i], p.warning, checkCorners = false, pdfPage = p.pdfPage)
         }
       } catch (e: Throwable) {
         error = messageOf(e, "The pages could not be updated.")
@@ -330,6 +405,23 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
     duplicates.forgetUndo()
   }
 
+  /** More pages than the item takes: the user picks which (in order) before making */
+  var picking by mutableStateOf(false)
+
+  /** The picker's choice: those pages, in that order (the others leave the list, sources kept) */
+  fun usePicked(order: List<Int>) {
+    val list = pages.toList()
+    val chosen = order.mapNotNull { list.getOrNull(it) }
+    val r = range
+    if (chosen.isEmpty() || (r != null && !PageLimits.selectionOk(chosen.size, r))) return
+    picking = false
+    pages.clear()
+    pages.addAll(chosen)
+    result = null
+    duplicates.forgetUndo()
+    make()
+  }
+
   /** Pages that look like an earlier page (the same paper scanned twice) */
   val duplicates = Duplicates(viewModelScope, pages, { it.thumb }, changed = { result = null })
 
@@ -340,6 +432,16 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
       return
     }
     if (pages.isEmpty()) return
+    // the item's page limit: never merged beyond it; fewer than it needs is said
+    val r = range
+    if (r != null && pages.size > r.last) {
+      picking = true
+      return
+    }
+    if (r != null && pages.size < r.first) {
+      error = "This item takes ${PageLimits.describe(r)}: add ${r.first - pages.size} more."
+      return
+    }
     val files = pages.toList()
     val asPdf = format == OutputFormat.PDF
     val ocr = asPdf && searchable
@@ -445,7 +547,7 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
     if (list.isEmpty()) return null
     return Draft(
       draft.key, "scan", draftTitle, presetId, itemIndex, studentId,
-      list.map { DraftPage(it.file.path, recipe = it.recipe, warning = it.warning, checkCorners = it.checkCorners) },
+      list.map { DraftPage(it.file.path, pdfPage = it.pdfPage, recipe = it.recipe, warning = it.warning, checkCorners = it.checkCorners) },
       mapOf("format" to format.name, "maxKb" to maxKbText, "searchable" to searchable.toString()),
     )
   }
@@ -459,7 +561,7 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
       val back = withContext(Dispatchers.Default) {
         d.pages.map { p ->
           val f = File(p.file)
-          Page(f, pageThumb(f, p.recipe), p.recipe, p.warning, p.checkCorners)
+          Page(f, pageThumb(f, p.pdfPage, p.recipe), p.recipe, p.warning, p.checkCorners, p.pdfPage)
         }
       }
       // (before any pages added meanwhile)
@@ -475,7 +577,14 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
   }
 
   init {
-    draft.begin(resume)
+    // pages chosen for this item in the page picker: a fresh start (an older draft is replaced)
+    val handed = Handoff.take(draft.key)
+    if (handed != null) {
+      // (an unfinished one for this item is not thrown away without asking)
+      draft.beginWith { addHandedOver(handed) }
+    } else {
+      draft.begin(resume)
+    }
   }
 
   override fun onCleared() {
@@ -546,6 +655,16 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
   }
 
   DraftOffer(vm.draft)
+  if (vm.picking) {
+    vm.range?.let { r ->
+      PagePickerDialog(vm.pages.map { it.thumb }, r, vm.limitTitle, onUse = { vm.usePicked(it) }, onDismiss = { vm.picking = false })
+    }
+  }
+  // pages being cleaned: the dark scanning screen (as the editor), then back to the list
+  vm.anim?.let { a ->
+    CleaningScreen(a, vm)
+    return
+  }
   Scaffold(
     topBar = { DocTopBar("Scan document", onBack, subtitle = vm.preset?.let { "Preset: ${it.name}" } ?: "Certificates, marksheets") },
     bottomBar = {
@@ -582,9 +701,6 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
         .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
       val result = vm.result
-      vm.anim?.let {
-        ScanAnimationCard(it, Modifier.padding(bottom = 12.dp))
-      }
       if (vm.pages.isEmpty()) {
         Text(
           "Google's scanner finds the page edges, straightens them and removes shadows. " +
@@ -712,3 +828,66 @@ private fun PageNote(text: String) {
 
 /** The animation's page pictures: about a phone screen's width */
 private const val PREVIEW = 900
+
+/** "Cleaning page 2 of 5…": the page sweeping clean, what it got, and the pages so far */
+@Composable
+private fun CleaningScreen(anim: ScanAnim, vm: ScanViewModel) {
+  com.docready.aamunim.ui.theme.EditorTheme {
+    val c = com.docready.aamunim.ui.theme.EditorColors
+    Column(Modifier.fillMaxSize().background(c.Background).systemBarsPadding()) {
+      Column(Modifier.fillMaxWidth().height(60.dp).padding(horizontal = 20.dp), verticalArrangement = Arrangement.Center) {
+        Text(anim.label, color = c.Text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Text("Magic · shadows, folds and fingers", color = c.TextDim, fontSize = 12.sp)
+      }
+      Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+        ScanAnimationCard(anim, height = 424, textColor = c.Text)
+      }
+      // what the last page got
+      Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+      ) {
+        for (step in vm.cleanSteps) {
+          val amber = step.startsWith("Finger")
+          Row(
+            Modifier.height(30.dp)
+              .background(if (amber) c.AmberSoft else c.Panel, RoundedCornerShape(15.dp))
+              .border(1.dp, if (amber) c.AmberLine else c.Line, RoundedCornerShape(15.dp))
+              .padding(horizontal = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            if (!amber) {
+              Icon(AppIcons.Check, contentDescription = null, tint = c.Accent, modifier = Modifier.size(14.dp))
+              Spacer(Modifier.width(6.dp))
+            }
+            Text(step, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (amber) c.AmberText else c.OnSelected)
+          }
+        }
+      }
+      // the pages: done ones with a tick, the ones to come as dashed places
+      Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 22.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+      ) {
+        val done = vm.pages.takeLast(vm.cleanDone)
+        for (p in done) {
+          Box(Modifier.size(width = 46.dp, height = 62.dp)) {
+            Box(Modifier.fillMaxSize().background(Color.White, RoundedCornerShape(6.dp)).border(2.dp, c.Accent, RoundedCornerShape(6.dp))) {
+              p.thumb?.let { Image(it, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(2.dp)) }
+            }
+            Box(Modifier.align(Alignment.TopEnd).offset(6.dp, (-6).dp).size(18.dp).background(c.Accent, CircleShape), contentAlignment = Alignment.Center) {
+              Text("✓", color = c.OnAccent, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+            }
+          }
+        }
+        repeat(maxOf(0, vm.cleanTotal - vm.cleanDone)) { i ->
+          Box(
+            Modifier.size(width = 46.dp, height = 62.dp)
+              .background(if (i == 0) Color(0xFFDCD3BF) else c.PanelHigh, RoundedCornerShape(6.dp))
+              .then(if (i == 0) Modifier.border(2.dp, c.Text, RoundedCornerShape(6.dp)) else Modifier.dashedBorder(c.Line, 6.dp)),
+          )
+        }
+      }
+    }
+  }
+}

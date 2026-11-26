@@ -1,5 +1,10 @@
 package com.docready.aamunim.ui.editor
 
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.border
 import kotlinx.coroutines.delay
 import com.docready.aamunim.ui.components.ScanAnimationCard
 import com.docready.aamunim.ui.components.ScanAnim
@@ -787,8 +792,8 @@ fun PageEditorScreen(state: PageEditorState) {
         state.notice?.let {
           Text(it, color = EditorColors.TextDim, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
         }
-        Surface(color = EditorColors.Panel) {
-          Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Surface(color = EditorColors.Panel, shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)) {
+          Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 4.dp)) {
             when (state.tab) {
               EditorTab.CROP -> CropControls(state)
               EditorTab.CLEAN -> CleanControls(state)
@@ -835,7 +840,12 @@ private fun EditorTopBar(state: PageEditorState) {
       Icon(AppIcons.Undo, contentDescription = "Undo")
     }
     IconButton(onClick = { state.redo() }, enabled = state.canRedo) { Icon(AppIcons.Redo, contentDescription = "Redo") }
-    Button(onClick = { state.done() }, modifier = Modifier.padding(end = 4.dp)) { Text("Done") }
+    Button(
+      onClick = { state.done() },
+      colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = EditorColors.Accent, contentColor = EditorColors.OnAccent),
+      contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 18.dp),
+      modifier = Modifier.padding(end = 4.dp).height(44.dp),
+    ) { Text("Done", fontWeight = FontWeight.Bold) }
   }
 }
 
@@ -1091,8 +1101,13 @@ private fun CleanControls(state: PageEditorState) {
       }
       Switch(checked = r.removeShadows, onCheckedChange = { state.update(r.copy(removeShadows = it)) })
     }
-    Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-      for (l in Look.entries) FilterChip(selected = r.look == l, onClick = { state.setLook(l) }, label = { Text(l.title) })
+    Text("LOOK", color = EditorColors.TextDim, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.3.sp, modifier = Modifier.padding(top = 6.dp, bottom = 8.dp))
+    // the five usual looks first, the rest after
+    for (row in Look.entries.chunked(5)) {
+      Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        for (l in row) LookSwatch(l, r.look == l, { state.setLook(l) }, Modifier.weight(1f))
+        repeat(5 - row.size) { Spacer(Modifier.weight(1f)) }
+      }
     }
   }
   if (state.mode != EditorMode.SIGNATURE) {
@@ -1153,12 +1168,65 @@ private fun EditorTabs(state: PageEditorState) {
     EditorMode.PHOTO -> listOf(EditorTab.CROP to "Crop", EditorTab.CLEAN to "Light", EditorTab.ERASE to "Erase")
     EditorMode.SIGNATURE -> listOf(EditorTab.CROP to "Crop", EditorTab.CLEAN to "Contrast", EditorTab.BEAUTIFY to "✨ Ink", EditorTab.ERASE to "Erase")
   }
+  // the tool bar: each tool an icon over its name, the current one on a green pill
   Row(
-    Modifier.fillMaxWidth().background(EditorColors.Background).padding(horizontal = 8.dp, vertical = 6.dp),
-    horizontalArrangement = Arrangement.SpaceEvenly,
+    Modifier.fillMaxWidth().background(EditorColors.Panel).padding(start = 8.dp, end = 8.dp, top = 10.dp, bottom = 18.dp),
+    horizontalArrangement = Arrangement.spacedBy(4.dp),
   ) {
     for ((t, name) in names) {
-      FilterChip(selected = state.tab == t, onClick = { state.selectTab(t) }, label = { Text(name) })
+      val on = state.tab == t
+      val icon = when (t) {
+        EditorTab.CROP -> AppIcons.ScanFrame
+        EditorTab.CLEAN -> AppIcons.Spark
+        EditorTab.BEAUTIFY -> AppIcons.Check
+        EditorTab.ERASE -> AppIcons.Edit
+      }
+      Column(
+        Modifier
+          .weight(1f)
+          .height(56.dp)
+          .background(if (on) EditorColors.Selected else Color.Transparent, RoundedCornerShape(18.dp))
+          .selectable(selected = on, role = androidx.compose.ui.semantics.Role.Tab, onClick = { state.selectTab(t) }),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+      ) {
+        Icon(icon, contentDescription = null, tint = if (on) EditorColors.OnSelected else EditorColors.TextSoft, modifier = Modifier.size(20.dp))
+        Text(
+          name.removePrefix("✨ "),
+          color = if (on) EditorColors.OnSelected else EditorColors.TextSoft,
+          fontSize = 11.5.sp,
+          fontWeight = if (on) FontWeight.Bold else FontWeight.SemiBold,
+          modifier = Modifier.padding(top = 4.dp),
+          maxLines = 1,
+        )
+      }
     }
+  }
+}
+
+/** A look as a swatch: a little page in the look's colour, its name; the chosen one outlined green */
+@Composable
+private fun LookSwatch(look: Look, on: Boolean, onClick: () -> Unit, modifier: Modifier) {
+  val swatch = when (look) {
+    Look.ORIGINAL -> Color(0xFFDCD3BF)
+    Look.MAGIC -> Color.White
+    Look.MAGIC_BW -> Color(0xFFF4F4F4)
+    Look.LIGHTEN -> Color(0xFFFBF8F1)
+    Look.AUTO -> Color(0xFFF1EADC)
+    Look.GREY -> Color(0xFFD9D9D9)
+    Look.BW -> Color(0xFFEDEDED)
+    Look.WHITEN -> Color(0xFFFFFEFB)
+  }
+  Column(
+    modifier
+      .height(70.dp)
+      .background(if (on) EditorColors.Selected else Color.Transparent, RoundedCornerShape(12.dp))
+      .border(if (on) 2.dp else 1.dp, if (on) EditorColors.Accent else EditorColors.Line, RoundedCornerShape(12.dp))
+      .selectable(selected = on, onClick = onClick),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.Center,
+  ) {
+    Box(Modifier.size(width = 30.dp, height = 36.dp).background(swatch, RoundedCornerShape(3.dp)).border(1.dp, EditorColors.Line, RoundedCornerShape(3.dp)))
+    Text(look.title, color = if (on) Color.White else EditorColors.TextSoft, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, modifier = Modifier.padding(top = 5.dp))
   }
 }

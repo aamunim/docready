@@ -61,6 +61,19 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.docready.aamunim.data.FileNames
 import com.docready.aamunim.data.PresetCodec
+import com.docready.aamunim.ui.components.AppCard
+import com.docready.aamunim.ui.components.CircleIconButton
+import com.docready.aamunim.ui.components.ScreenTitle
+import com.docready.aamunim.ui.components.dashedBorder
+import com.docready.aamunim.ui.theme.DocReadyColors
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
+import com.docready.aamunim.data.model.PageLimits
+import com.docready.aamunim.data.model.withPageNumbers
 import com.docready.aamunim.data.PresetRepository
 import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.data.model.OutputFormat
@@ -144,19 +157,37 @@ private fun rememberPresetImport(onImported: (Preset) -> Unit): () -> Unit {
 }
 
 @Composable
-fun PresetsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Unit, onScanQr: () -> Unit = {}) {
+fun PresetsScreen(onBack: (() -> Unit)?, onOpen: (String) -> Unit, onNew: () -> Unit, onScanQr: () -> Unit = {}) {
   val repo = LocalContext.current.docReady.presets
   val presets by repo.presets.collectAsState()
   var query by rememberSaveable { mutableStateOf("") }
   val import = rememberPresetImport { onOpen(it.id) }
   val shown = presets.filter { query.isBlank() || it.name.contains(query.trim(), ignoreCase = true) }
+  val students by LocalContext.current.docReady.students.students.collectAsState()
+  var qrFor by remember { mutableStateOf<Preset?>(null) }
+  var menu by remember { mutableStateOf(false) }
   Scaffold(
     topBar = {
-      DocTopBar("Presets", onBack, actions = {
-        TextButton(onClick = onScanQr) { Text("Scan QR") }
-        TextButton(onClick = import) { Text("Import") }
-        if (presets.isNotEmpty()) TextButton(onClick = onNew) { Text("+ New") }
-      })
+      if (onBack != null) {
+        DocTopBar("Presets", onBack)
+      } else {
+        ScreenTitle("Presets") {
+          OutlinedButton(onClick = onScanQr, modifier = Modifier.height(44.dp), contentPadding = PaddingValues(horizontal = 14.dp)) {
+            Icon(AppIcons.Qr, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text("Scan QR")
+          }
+          Box {
+            CircleIconButton(AppIcons.More, "More: import a preset file", { menu = true })
+            androidx.compose.material3.DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+              androidx.compose.material3.DropdownMenuItem(text = { Text("Import a preset file") }, onClick = {
+                menu = false
+                import()
+              })
+            }
+          }
+        }
+      }
     },
   ) { padding ->
     if (presets.isEmpty()) {
@@ -193,42 +224,80 @@ fun PresetsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Uni
     }
     LazyColumn(
       Modifier.padding(padding).fillMaxSize(),
-      contentPadding = PaddingValues(16.dp),
+      contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 20.dp),
       verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-      item {
-        OutlinedTextField(
-          value = query,
-          onValueChange = { query = it },
-          leadingIcon = { Icon(AppIcons.Search, contentDescription = null) },
-          placeholder = { Text("Search presets") },
-          singleLine = true,
-          modifier = Modifier.fillMaxWidth(),
-        )
+      if (presets.size > 4) {
+        item {
+          OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            leadingIcon = { Icon(AppIcons.Search, contentDescription = null) },
+            placeholder = { Text("Search presets") },
+            singleLine = true,
+            shape = RoundedCornerShape(24.dp),
+            modifier = Modifier.fillMaxWidth(),
+          )
+        }
       }
-      items(shown, key = { it.id }) { p -> PresetCard(p) { onOpen(p.id) } }
+      itemsIndexed(shown, key = { _, p -> p.id }) { i, p ->
+        PresetCard(p, i, students.count { it.presetId == p.id }, onQr = { qrFor = p }) { onOpen(p.id) }
+      }
       if (shown.isEmpty()) item { Text("No preset matches.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+      item {
+        val green = MaterialTheme.colorScheme.primary
+        Surface(
+          onClick = onNew,
+          shape = RoundedCornerShape(18.dp),
+          color = androidx.compose.ui.graphics.Color.Transparent,
+          modifier = Modifier.fillMaxWidth().height(50.dp).dashedBorder(DocReadyColors.extra.successDash, 18.dp, 1.5.dp),
+        ) {
+          Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            Icon(AppIcons.Add, contentDescription = null, tint = green, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("New preset", color = green, fontWeight = FontWeight.Bold)
+          }
+        }
+      }
       item { Text(OFFICIAL_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
   }
+  qrFor?.let { PresetQrSheet(it, onDismiss = { qrFor = null }) }
 }
 
+/** A preset: its icon, name, items and use, a QR button, and its items as chips */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun PresetCard(p: Preset, onClick: () -> Unit) {
-  Surface(
-    onClick = onClick,
-    shape = RoundedCornerShape(14.dp),
-    color = MaterialTheme.colorScheme.surface,
-    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-    modifier = Modifier.fillMaxWidth(),
-  ) {
-    Column(Modifier.padding(14.dp)) {
+private fun PresetCard(p: Preset, index: Int, used: Int, onQr: () -> Unit, onClick: () -> Unit) {
+  val extra = DocReadyColors.extra
+  val green = index % 2 == 0
+  AppCard(Modifier.fillMaxWidth(), onClick = onClick) {
+    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
       Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(p.name, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-        Badge("${p.items.size} item${if (p.items.size == 1) "" else "s"}")
+        Box(
+          Modifier.size(42.dp).background(if (green) MaterialTheme.colorScheme.primaryContainer else extra.warningContainer, RoundedCornerShape(13.dp)),
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(AppIcons.PresetList, contentDescription = null, tint = if (green) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(22.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+          Text(p.name, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+          val meta = "${p.items.size} item${if (p.items.size == 1) "" else "s"}" + if (used > 0) " · used by $used student${if (used == 1) "" else "s"}" else ""
+          Text(meta, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        CircleIconButton(AppIcons.Qr, "Show QR for ${p.name}", onQr, filled = true)
       }
-      for (item in p.items) {
-        Text(item.summary(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+      androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        for (item in p.items) {
+          Box(
+            Modifier.height(26.dp).background(MaterialTheme.colorScheme.background, RoundedCornerShape(13.dp))
+              .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(13.dp)).padding(horizontal = 9.dp),
+            contentAlignment = Alignment.Center,
+          ) {
+            Text(item.title, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, color = extra.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
+          }
+        }
       }
     }
   }
@@ -238,7 +307,7 @@ private fun PresetCard(p: Preset, onClick: () -> Unit) {
 @Composable
 fun NoPresetsCard(onCreate: () -> Unit, modifier: Modifier = Modifier) {
   Surface(
-    shape = RoundedCornerShape(14.dp),
+    shape = RoundedCornerShape(18.dp),
     color = MaterialTheme.colorScheme.secondaryContainer,
     modifier = modifier.fillMaxWidth(),
   ) {
@@ -290,6 +359,7 @@ fun PresetDetailScreen(
   onMake: (Preset, Int) -> Unit,
   onEdit: (String) -> Unit,
   onShowQr: (String) -> Unit = {},
+  onAdd: (presetId: String, index: Int) -> Unit = { _, _ -> },
 ) {
   val context = LocalContext.current
   val repo = context.docReady.presets
@@ -334,7 +404,7 @@ fun PresetDetailScreen(
       } else {
         preset.items.forEachIndexed { i, item ->
           Surface(
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(18.dp),
             color = MaterialTheme.colorScheme.surface,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
             modifier = Modifier.fillMaxWidth(),
@@ -360,7 +430,11 @@ fun PresetDetailScreen(
                 }
                 Text(item.summary(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
               }
-              Button(onClick = { onMake(preset, i) }) { Text("Make") }
+              Column(horizontalAlignment = Alignment.End) {
+                Button(onClick = { onMake(preset, i) }) { Text("Make") }
+                // any files (scan, gallery, PDFs): pages picked if more than the item takes
+                OutlinedButton(onClick = { onAdd(preset.id, i) }) { Text("Add") }
+              }
             }
           }
         }
@@ -397,12 +471,14 @@ private class EditItem(item: PresetItem) {
   var background by mutableStateOf(item.background ?: PhotoBackground.WHITE)
   var name by mutableStateOf(item.name ?: "")
   var required by mutableStateOf(item.required)
-  var pagesHint by mutableStateOf(item.pagesHint ?: "")
+  /** A document's pages: exactly N, up to N, or any number */
+  var pagesMode by mutableStateOf(PagesMode.of(item.withPageNumbers()))
+  var pagesN by mutableStateOf(((item.withPageNumbers().maxPages ?: 1).takeIf { it < PageLimits.ANY } ?: 1).toString())
   var keywords by mutableStateOf(item.keywords.joinToString(", "))
 
   /** As text, to be kept in the saved screen state */
   fun toSaved(): ArrayList<String> =
-    arrayListOf(kind.name, width, height, maxKb, format.name, background.name, name, required.toString(), pagesHint, id, keywords)
+    arrayListOf(kind.name, width, height, maxKb, format.name, background.name, name, required.toString(), "", id, keywords, pagesMode.name, pagesN)
 
   companion object {
     fun fromSaved(v: List<String>): EditItem = EditItem(PresetItem(ItemKind.valueOf(v[0]))).apply {
@@ -413,9 +489,10 @@ private class EditItem(item: PresetItem) {
       background = PhotoBackground.valueOf(v[5])
       name = v.getOrNull(6) ?: ""
       required = v.getOrNull(7)?.toBooleanStrictOrNull() ?: true
-      pagesHint = v.getOrNull(8) ?: ""
       id = v.getOrNull(9) ?: ""
       keywords = v.getOrNull(10) ?: ""
+      pagesMode = v.getOrNull(11)?.let { m -> PagesMode.entries.firstOrNull { it.name == m } } ?: PagesMode.UP_TO
+      pagesN = v.getOrNull(12) ?: "1"
     }
 
     fun newOf(kind: ItemKind): EditItem = EditItem(
@@ -469,6 +546,11 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
         error = "Item ${i + 1}: max KB must be 2 to 50000 (or empty for no limit)."
         return null
       }
+      val n = e.pagesN.toIntOrNull()
+      if (e.kind == ItemKind.DOCUMENT && e.pagesMode != PagesMode.ANY && (n == null || n !in 1..PageLimits.ANY)) {
+        error = "Item ${i + 1}: pages must be 1 to ${PageLimits.ANY}."
+        return null
+      }
       val format = when (e.kind) {
         ItemKind.DOCUMENT -> if (e.format == OutputFormat.JPG) OutputFormat.JPG else OutputFormat.PDF
         ItemKind.PHOTO -> OutputFormat.JPG
@@ -483,7 +565,9 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
         background = if (e.kind == ItemKind.PHOTO) e.background else null,
         name = e.name.trim().take(60).ifEmpty { null },
         required = e.required,
-        pagesHint = if (e.kind == ItemKind.DOCUMENT) e.pagesHint.trim().take(20).ifEmpty { null } else null,
+        // (a document made as a picture is one page: JPG takes exactly one)
+        minPages = if (e.kind != ItemKind.DOCUMENT || format == OutputFormat.JPG) null else e.pagesMode.min(n ?: 1),
+        maxPages = if (e.kind != ItemKind.DOCUMENT) null else if (format == OutputFormat.JPG) 1 else e.pagesMode.max(n ?: 1),
         id = e.id,
         keywords = e.keywords.split(',').map { it.trim().take(30) }.filter { it.isNotEmpty() }.distinct().take(20),
       )
@@ -588,7 +672,7 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
 private fun ItemEditor(i: Int, e: EditItem, items: SnapshotStateList<EditItem>) {
   VSpace(10)
   Surface(
-    shape = RoundedCornerShape(14.dp),
+    shape = RoundedCornerShape(18.dp),
     color = MaterialTheme.colorScheme.surface,
     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
     modifier = Modifier.fillMaxWidth(),
@@ -627,15 +711,16 @@ private fun ItemEditor(i: Int, e: EditItem, items: SnapshotStateList<EditItem>) 
           NumberField("Height px", e.height, { e.height = it }, Modifier.weight(1f))
         }
         NumberField("Max KB", e.maxKb, { e.maxKb = it }, Modifier.weight(1f))
-        if (e.kind == ItemKind.DOCUMENT) {
-          OutlinedTextField(
-            value = e.pagesHint,
-            onValueChange = { e.pagesHint = it.take(20) },
-            label = { Text("Pages") },
-            placeholder = { Text("1–2") },
-            singleLine = true,
-            modifier = Modifier.weight(1f),
-          )
+        if (e.kind == ItemKind.DOCUMENT && e.pagesMode != PagesMode.ANY && e.format != OutputFormat.JPG) {
+          NumberField("Pages", e.pagesN, { e.pagesN = it.filter { c -> c.isDigit() }.take(3) }, Modifier.weight(1f))
+        }
+      }
+      if (e.kind == ItemKind.DOCUMENT) {
+        VSpace(8)
+        if (e.format == OutputFormat.JPG) {
+          Text("A JPG is one page.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+          ChoiceChips(PagesMode.entries.toList(), e.pagesMode, { it.title }, { e.pagesMode = it })
         }
       }
       if (e.kind == ItemKind.DOCUMENT) {
@@ -675,3 +760,26 @@ private fun ItemEditor(i: Int, e: EditItem, items: SnapshotStateList<EditItem>) 
 /** The file-name tokens a preset gives ({preset}, and its own pattern if it has one) */
 fun presetNaming(p: Preset?): com.docready.aamunim.data.NameContext =
   com.docready.aamunim.data.NameContext(preset = p?.name, presetPattern = p?.namePattern)
+
+/** A document item's pages in the preset editor */
+private enum class PagesMode(val title: String) {
+  EXACTLY("Exactly N"),
+  UP_TO("Up to N"),
+  ANY("Any");
+
+  fun min(n: Int): Int? = if (this == EXACTLY) n else null
+
+  fun max(n: Int): Int = if (this == ANY) PageLimits.ANY else n
+
+  companion object {
+    fun of(item: PresetItem): PagesMode {
+      val hi = item.maxPages ?: 1
+      val lo = item.minPages ?: 1
+      return when {
+        hi >= PageLimits.ANY -> ANY
+        lo == hi && hi > 1 -> EXACTLY
+        else -> UP_TO
+      }
+    }
+  }
+}

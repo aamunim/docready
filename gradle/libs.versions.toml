@@ -17,6 +17,9 @@ mlkitTextRecognition = "19.0.1"
 # QR codes: made and read from pictures by ZXing (plain Java); the camera scan by Play services
 zxing = "3.5.3"
 codeScanner = "16.1.0"
+# Google Drive: the user's own account (drive.file only) and the upload queue
+playServicesAuth = "21.3.0"
+work = "2.9.1"
 
 # build
 compileSdk = "36"
@@ -44,6 +47,8 @@ mlkit-subject-segmentation = { module = "com.google.android.gms:play-services-ml
 mlkit-text-recognition = { module = "com.google.android.gms:play-services-mlkit-text-recognition", version.ref = "mlkitTextRecognition" }
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 code-scanner = { module = "com.google.android.gms:play-services-code-scanner", version.ref = "codeScanner" }
+play-services-auth = { module = "com.google.android.gms:play-services-auth", version.ref = "playServicesAuth" }
+work-runtime = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

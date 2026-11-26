@@ -1,5 +1,8 @@
 package com.docready.aamunim.ui.editor
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -155,7 +158,17 @@ internal fun BeautifyControls(state: PageEditorState) {
 /** A step that is only on or off */
 @Composable
 private fun Switchable(title: String, detail: String?, on: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
-  Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+  // a dot for each step: green when on, amber when found but off, grey when not found
+  val dot = when {
+    on -> EditorColors.Accent
+    enabled -> EditorColors.Amber
+    else -> EditorColors.Line
+  }
+  Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).drawBehind {
+    drawLine(EditorColors.Divider, androidx.compose.ui.geometry.Offset(0f, size.height), androidx.compose.ui.geometry.Offset(size.width, size.height), 1.dp.toPx())
+  }, verticalAlignment = Alignment.CenterVertically) {
+    Box(Modifier.size(10.dp).background(dot, androidx.compose.foundation.shape.CircleShape))
+    Spacer(Modifier.width(12.dp))
     Column(Modifier.weight(1f)) {
       Text(title, color = if (enabled) EditorColors.Text else EditorColors.TextDim)
       if (detail != null && on) Text(detail, color = EditorColors.TextDim, style = MaterialTheme.typography.bodySmall)

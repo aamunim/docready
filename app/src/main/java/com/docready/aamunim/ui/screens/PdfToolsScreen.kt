@@ -76,6 +76,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -822,6 +823,18 @@ fun PdfToolsScreen(
         PdfMode.ID_CARD -> vm.front != null && vm.back != null
         PdfMode.SPLIT -> false // (its own "Make all")
         else -> vm.pages.isNotEmpty()
+      }
+      if (vm.mode == PdfMode.SPLIT && vm.split.preset != null && vm.pages.isNotEmpty() && vm.split.cropping == null) {
+        BottomActions {
+          OutlinedButton(onClick = { vm.openEditor(0) }, enabled = vm.busy == null && vm.split.busy == null, modifier = Modifier.height(50.dp)) {
+            Icon(AppIcons.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Edit pages")
+          }
+          Button(onClick = { vm.split.makeAll(vm.pages) }, enabled = vm.busy == null && vm.split.busy == null, modifier = Modifier.weight(1f).height(50.dp)) {
+            Text("Make all", fontWeight = FontWeight.Bold)
+          }
+        }
       }
       if (canMake) {
         BottomActions {
