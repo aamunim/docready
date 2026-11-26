@@ -55,14 +55,18 @@ class PresetRepository(context: Context) {
   /** A checked preset put in the place of an existing one (its id kept) */
   fun replace(existingId: String, p: Preset): Preset = save(replacePlan(existingId, p).preset.copy(id = existingId))
 
-  /** [preset] as it will replace an existing one; [unmatched]: the existing items with no match */
-  class ReplacePlan(val preset: Preset, val unmatched: Int)
+  /**
+   * [preset] as it will replace an existing one. [renamed]: items carried over though their name
+   * changed (their ticks are kept); [unmatched]: the existing items with no match (ticks lost).
+   */
+  class ReplacePlan(val preset: Preset, val unmatched: Int, val renamed: Int = 0)
 
   /**
    * The incoming preset with the existing preset's item ids carried over (so students' ticks and
-   * learned words stay with their items): matched by kind and name first, then by place (same
-   * kind); new items get new ids. The existing file-name pattern is kept unless the incoming
-   * preset has its own.
+   * learned words stay with their items): matched by kind and name. Only when exactly one item
+   * is left unmatched on each side, at the same place and of the same kind, is it taken as the
+   * same item renamed; nothing else is guessed (an SSC certificate never becomes an NID). New
+   * items get new ids. The existing file-name pattern is kept unless the incoming preset has its own.
    */
   fun replacePlan(existingId: String, p: Preset): ReplacePlan {
     val old = get(existingId) ?: return ReplacePlan(p, 0)
@@ -76,14 +80,16 @@ class PresetRepository(context: Context) {
         ids[i] = old.items[j].id
       }
     }
-    p.items.forEachIndexed { i, item ->
-      if (ids[i] == null && i < old.items.size && i !in used && old.items[i].kind == item.kind) {
-        used.add(i)
-        ids[i] = old.items[i].id
-      }
+    var renamed = 0
+    val newLeft = p.items.indices.filter { ids[it] == null }
+    val oldLeft = old.items.indices.filter { it !in used }
+    if (newLeft.size == 1 && oldLeft.size == 1 && newLeft[0] == oldLeft[0] && old.items[oldLeft[0]].kind == p.items[newLeft[0]].kind) {
+      used.add(oldLeft[0])
+      ids[newLeft[0]] = old.items[oldLeft[0]].id
+      renamed = 1
     }
     val items = p.items.mapIndexed { i, item -> item.copy(id = ids[i]?.takeIf { it.isNotEmpty() } ?: newId()) }
-    return ReplacePlan(p.copy(items = items, namePattern = p.namePattern ?: old.namePattern), old.items.size - used.size)
+    return ReplacePlan(p.copy(items = items, namePattern = p.namePattern ?: old.namePattern), old.items.size - used.size, renamed)
   }
 
   /** A preset already named so (any case), or null */

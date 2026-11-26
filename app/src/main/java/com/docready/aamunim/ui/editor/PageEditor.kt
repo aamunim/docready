@@ -354,7 +354,9 @@ class PageEditorState(
       note = (note?.let { "$it " } ?: "") + "Erasing was removed because the page moved under it (Undo brings it back)."
     }
     // fingers are boxes on the framed page: a new framing means looking for them again
-    if ((userMoved || beautyMoved) && old.fingerBoxes.isNotEmpty()) {
+    // (a quarter turn carries them along itself, unless Beautify's framing changed with it)
+    val fingersTurned = r.turn != old.turn && r.quad == old.quad && r.rotate == old.rotate && r.fingerBoxes != old.fingerBoxes && !beautyMoved
+    if ((userMoved || beautyMoved) && !fingersTurned && old.fingerBoxes.isNotEmpty()) {
       r = r.copy(fingers = false, fingerBoxes = emptyList())
       note = (note?.let { "$it " } ?: "") + "Fingers: look again in ✨ Beautify, the page moved."
     }
@@ -371,7 +373,6 @@ class PageEditorState(
     if (key == null || key != lastKey) notice = null // (an older note is about an older step)
     val (r, note) = ruled(old, new)
     if (note != null) notice = note
-    if (old.fingerBoxes.isNotEmpty() && r.fingerBoxes.isEmpty()) fingerBoxes = emptyList()
     if (r == old) return
     if (key == null || key != lastKey) {
       undo.getOrPut(index) { ArrayList() }.add(old)
@@ -380,6 +381,14 @@ class PageEditorState(
     lastKey = key
     recipes[index] = r
     flags()
+    // the fingers shown follow the page: its own boxes (turned along), or looked for again
+    if (r.fingerBoxes != old.fingerBoxes) {
+      fingerBoxes = r.fingerBoxes
+    } else if (r.fingerBoxes.isEmpty() && (r.quad != old.quad || r.turn != old.turn || r.rotate != old.rotate || r.beautify?.sameGeometry(old.beautify) == false)) {
+      fingerJob?.cancel()
+      fingerBoxes = emptyList()
+      if (tab == EditorTab.BEAUTIFY) findFingersHere()
+    }
     if (key != null) {
       // a drag: the box / corners follow the finger; the preview is made when it lifts
       dragDirty = true
@@ -404,7 +413,15 @@ class PageEditorState(
     recipes[index] = list.removeAt(list.size - 1)
     lastKey = null
     flags()
+    restoredFingers()
     refresh()
+  }
+
+  /** After Undo / Redo: the fingers shown are the restored recipe's (or looked for again) */
+  private fun restoredFingers() {
+    fingerJob?.cancel()
+    fingerBoxes = recipe.fingerBoxes
+    if (fingerBoxes.isEmpty() && tab == EditorTab.BEAUTIFY) findFingersHere()
   }
 
   fun redo() {
@@ -414,6 +431,7 @@ class PageEditorState(
     recipes[index] = list.removeAt(list.size - 1)
     lastKey = null
     flags()
+    restoredFingers()
     refresh()
   }
 
@@ -473,7 +491,9 @@ class PageEditorState(
       }
     }
     val crop = r.crop?.let { CropRect(1f - it.bottom, it.left, 1f - it.top, it.right) }
-    update(r.copy(turn = (r.turn + 90) % 360, crop = crop, erase = erase))
+    // the fingers' boxes turn with the page (as the crop box and the erasing do)
+    val fingers = r.fingerBoxes.map { CropRect(1f - it.bottom, it.left, 1f - it.top, it.right) }
+    update(r.copy(turn = (r.turn + 90) % 360, crop = crop, erase = erase, fingerBoxes = fingers))
   }
 
   /** A brush stroke drawn on the shown page (points as parts of it) */

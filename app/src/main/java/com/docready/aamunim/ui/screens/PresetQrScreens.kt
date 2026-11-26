@@ -72,6 +72,7 @@ import com.docready.aamunim.ui.components.VSpace
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.google.mlkit.common.MlKitException
 import com.google.android.gms.common.moduleinstall.ModuleInstall
 import com.google.android.gms.common.moduleinstall.ModuleInstallRequest
 import kotlinx.coroutines.Dispatchers
@@ -329,11 +330,15 @@ fun PresetQrImportScreen(onBack: () -> Unit, onImported: (String) -> Unit) {
           // more parts to go: the scanner opens again for the next one (Back stops it)
           if (!vm.complete && vm.total > 1 && vm.error == null) scanWithCamera()
         }
-        .addOnFailureListener { _ ->
-          // (mostly its module not downloaded yet on a fresh install: asked for now, by Play
-          // services itself; the app has no network permission)
-          askForScanner(options)
-          vm.error = "The scanner is getting ready (Google Play is downloading it). Try again in a minute, or use “From a picture”."
+        .addOnFailureListener { e ->
+          if ((e as? MlKitException)?.errorCode == MlKitException.UNAVAILABLE) {
+            // its module not downloaded yet (a fresh install): asked for now, by Play services
+            // itself (the app has no network permission)
+            askForScanner(options)
+            vm.error = "The scanner is getting ready (Google Play is downloading it). Try again in a minute, or use “From a picture”."
+          } else {
+            vm.error = "The scanner could not start: ${e.message ?: "unknown problem"}. Try “From a picture”."
+          }
         }
     } catch (e: Exception) {
       vm.error = "The code scanner is not available on this phone. Use “From a picture”."
@@ -423,10 +428,12 @@ fun PresetQrImportScreen(onBack: () -> Unit, onImported: (String) -> Unit) {
       title = { Text("“${existing.name}” is already here") },
       text = {
         // (items are matched by kind and name, then by place: students' ticks stay with them)
-        val lost = remember(existing.id, p) { app.presets.replacePlan(existing.id, p).unmatched }
+        val plan = remember(existing.id, p) { app.presets.replacePlan(existing.id, p) }
+        val lost = plan.unmatched
         Text(
           "Replace your preset with this one, or keep both (this one gets a new name)?" +
-            if (lost > 0) " $lost of your preset's items have no match in this one: students' ticks for them will be lost." else "",
+            (if (plan.renamed > 0) " ${plan.renamed} item renamed: its ticks are kept." else "") +
+            (if (lost > 0) " $lost of your preset's items have no match in this one: students' ticks for them will be lost." else ""),
         )
       },
       confirmButton = {
