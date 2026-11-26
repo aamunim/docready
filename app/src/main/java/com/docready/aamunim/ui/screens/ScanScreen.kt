@@ -60,6 +60,9 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.docready.aamunim.data.FileNames
 import com.docready.aamunim.intake.Handoff
+import com.docready.aamunim.data.model.PageLimits
+import com.docready.aamunim.data.model.pageRange
+import com.docready.aamunim.ui.components.PagePickerDialog
 import com.docready.aamunim.intake.HandoffPage
 import com.docready.aamunim.intake.PageKind
 import com.docready.aamunim.data.Draft
@@ -136,6 +139,8 @@ class Page(
   val recipe: PageRecipe = PageRecipe.Document,
   val warning: String? = null,
   val checkCorners: Boolean = false,
+  /** A PDF's page: [file] is the PDF and this its page (made into a picture only when needed) */
+  val pdfPage: Int = -1,
 )
 
 class ScanViewModel(app: Application, private val presetId: String?, private val itemIndex: Int, private val studentId: String? = null, resume: Boolean = false) : AndroidViewModel(app) {
@@ -164,6 +169,7 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
 
   /** The limits of a preset's document item, picked on this screen */
   fun applyItem(it: PresetItem) {
+    limitItem = it
     format = if (it.format == OutputFormat.JPG) OutputFormat.JPG else OutputFormat.PDF
     maxKbText = it.maxKb?.toString() ?: ""
     result = null
@@ -184,10 +190,38 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
   fun addPhotos(uris: List<Uri>) = addPages(uris.take(30).map { u -> { FileNames.copyIn(ctx, u, "img") } to PageKind.PHOTO })
 
   /** Pages chosen for this item in the page picker (a PDF's pages keep their own look) */
-  fun addHandedOver(list: List<HandoffPage>) = addPages(list.map { p -> { p.file } to p.kind })
+  fun addHandedOver(list: List<HandoffPage>) = addPages(list.map { p -> { p.file } to p.kind }, list.map { it.pdfPage })
 
-  private fun addPages(items: List<Pair<() -> File, PageKind>>) {
-    if (items.isEmpty()) return
+  /** The item whose page limit applies (also one picked on this screen) */
+  private var limitItem by mutableStateOf(item)
+
+  /** The item's name, for the page picker */
+  val limitTitle: String get() = limitItem?.title ?: "This item"
+
+  /** The pages this item takes (no item: no limit) */
+  val range: IntRange? get() = limitItem?.pageRange
+
+  /**
+   * The page's picture at [side] (a PDF's page made from the PDF; a picture loaded): its
+   * source is never changed
+   */
+  private fun load(f: File, pdfPage: Int, side: Int): Bitmap =
+    if (pdfPage >= 0) PdfTools.renderPage(f, pdfPage, side) else DocTools.load(ctx, Uri.fromFile(f), side)
+
+  private fun addPages(all: List<Pair<() -> File, PageKind>>, pdfPages: List<Int> = emptyList()) {
+    if (all.isEmpty()) return
+    // never more pages than the item takes: the rest are not added (Add on the item picks)
+    val room = range?.let { it.last - pages.size } ?: Int.MAX_VALUE
+    val items = all.take(maxOf(0, room))
+    if (items.size < all.size) {
+      val r = range!!
+      error = if (items.isEmpty()) {
+        "This item takes ${PageLimits.describe(r)}: remove a page first, or use Add on the item to choose."
+      } else {
+        "This item takes ${PageLimits.describe(r)}: only ${items.size} more ${if (items.size == 1) "was" else "were"} added."
+      }
+      if (items.isEmpty()) return
+    }
     viewModelScope.launch {
       busy = "Reading the pages…"
       error = null
@@ -198,16 +232,17 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
         for ((n, item) in list.withIndex()) {
           val (fileOf, kind) = item
           val photos = kind == PageKind.PHOTO
+          val pdfPage = pdfPages.getOrNull(n) ?: -1
           // the raw page first: the scanning animation sweeps over it while it is cleaned
           val (f, raw) = withContext(Dispatchers.Default) {
             val file = fileOf()
-            file to DocTools.load(ctx, Uri.fromFile(file), PREVIEW).asImageBitmap()
+            file to load(file, pdfPage, PREVIEW).asImageBitmap()
           }
           val label = if (list.size == 1) "Cleaning the page…" else "Cleaning page ${n + 1} of ${list.size}…"
           anim = ScanAnim(animKey++, raw, null, label)
           val (page, cleaned) = withContext(Dispatchers.Default) {
             val quad = if (photos) {
-              val b = DocTools.load(ctx, Uri.fromFile(f), 1600)
+              val b = load(f, pdfPage, 1600)
               try {
                 DocTools.findPaper(b)
               } finally {
@@ -222,12 +257,12 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
             } else {
               val framed = PageRecipe.Document.copy(quad = quad?.toList())
               // fingers holding the paper: painted out by default where found (never over a face)
-              PageRenderer.withFingers(framed, fingersOn(f, framed))
+              PageRenderer.withFingers(framed, fingersOn(f, pdfPage, framed))
             }
             // the real result, small: the animation's reveal and the page's tile
-            val shown = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), PREVIEW), recipe)
+            val shown = PageRenderer.render(load(f, pdfPage, PREVIEW), recipe)
             val tile = DocTools.scaleToMax(shown.copy(Bitmap.Config.ARGB_8888, false), 240).asImageBitmap()
-            Page(f, tile, recipe, qualityWarning(f), checkCorners = photos) to shown.asImageBitmap()
+            Page(f, tile, recipe, if (pdfPage >= 0) null else qualityWarning(f), checkCorners = photos, pdfPage = pdfPage) to shown.asImageBitmap()
           }
           pages.add(page)
           anim = anim?.copy(after = cleaned, done = true, label = if (list.size == 1) "Page ready" else "Page ${n + 1} of ${list.size} ready")
@@ -245,8 +280,8 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
   }
 
   /** Fingers found on the page as it will be framed (a failure finds none) */
-  private fun fingersOn(f: File, r: PageRecipe): PageRenderer.FingerFind? = try {
-    PageRenderer.findFingers(DocTools.load(ctx, Uri.fromFile(f), 1600), r)
+  private fun fingersOn(f: File, pdfPage: Int, r: PageRecipe): PageRenderer.FingerFind? = try {
+    PageRenderer.findFingers(load(f, pdfPage, 1600), r)
   } catch (_: Throwable) {
     null
   }
@@ -257,9 +292,9 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
     result = null
     viewModelScope.launch {
       try {
-        val thumb = withContext(Dispatchers.Default) { pageThumb(page.file, r) }
+        val thumb = withContext(Dispatchers.Default) { pageThumb(page.file, page.pdfPage, r) }
         val at = pages.indexOf(page)
-        if (at >= 0) pages[at] = Page(page.file, thumb, r, page.warning, page.checkCorners)
+        if (at >= 0) pages[at] = Page(page.file, thumb, r, page.warning, page.checkCorners, page.pdfPage)
       } catch (e: Throwable) {
         error = messageOf(e, "The page could not be updated.")
       }
@@ -280,8 +315,8 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
   }
 
   /** The page as it will come out (its edits applied), small, for the list */
-  private fun pageThumb(f: File, recipe: PageRecipe): ImageBitmap? {
-    val b = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), 800), recipe)
+  private fun pageThumb(f: File, pdfPage: Int, recipe: PageRecipe): ImageBitmap? {
+    val b = PageRenderer.render(load(f, pdfPage, 800), recipe)
     return DocTools.scaleToMax(b, 240).asImageBitmap()
   }
 
@@ -292,7 +327,7 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
    */
   private fun prepared(p: Page): Bitmap = PdfTools.atBestSize { side ->
     // (straightening from corners takes a little more of the photo than the page it gives)
-    val b = DocTools.load(ctx, Uri.fromFile(p.file), if (p.recipe.quad != null) side + 600 else side)
+    val b = load(p.file, p.pdfPage, if (p.recipe.quad != null) side + 600 else side)
     DocTools.scaleToMax(PageRenderer.render(b, p.recipe, side), side)
   }
 
@@ -305,7 +340,7 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
     if (list.isEmpty()) return
     editor = PageEditorState(
       viewModelScope,
-      list.mapIndexed { i, p -> EditorPage("Page ${i + 1}", p.recipe) { side -> DocTools.load(ctx, Uri.fromFile(p.file), side) } },
+      list.mapIndexed { i, p -> EditorPage("Page ${i + 1}", p.recipe) { side -> load(p.file, p.pdfPage, side) } },
       start,
       EditorMode.DOCUMENT,
       onDone = { recipes -> applyRecipes(list, recipes) },
@@ -324,9 +359,9 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
       try {
         for (i in changed) {
           val p = list[i]
-          val thumb = withContext(Dispatchers.Default) { pageThumb(p.file, recipes[i]) }
+          val thumb = withContext(Dispatchers.Default) { pageThumb(p.file, p.pdfPage, recipes[i]) }
           val at = pages.indexOf(p)
-          if (at >= 0) pages[at] = Page(p.file, thumb, recipes[i], p.warning, checkCorners = false)
+          if (at >= 0) pages[at] = Page(p.file, thumb, recipes[i], p.warning, checkCorners = false, pdfPage = p.pdfPage)
         }
       } catch (e: Throwable) {
         error = messageOf(e, "The pages could not be updated.")
@@ -342,6 +377,23 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
     duplicates.forgetUndo()
   }
 
+  /** More pages than the item takes: the user picks which (in order) before making */
+  var picking by mutableStateOf(false)
+
+  /** The picker's choice: those pages, in that order (the others leave the list, sources kept) */
+  fun usePicked(order: List<Int>) {
+    val list = pages.toList()
+    val chosen = order.mapNotNull { list.getOrNull(it) }
+    val r = range
+    if (chosen.isEmpty() || (r != null && !PageLimits.selectionOk(chosen.size, r))) return
+    picking = false
+    pages.clear()
+    pages.addAll(chosen)
+    result = null
+    duplicates.forgetUndo()
+    make()
+  }
+
   /** Pages that look like an earlier page (the same paper scanned twice) */
   val duplicates = Duplicates(viewModelScope, pages, { it.thumb }, changed = { result = null })
 
@@ -352,6 +404,16 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
       return
     }
     if (pages.isEmpty()) return
+    // the item's page limit: never merged beyond it; fewer than it needs is said
+    val r = range
+    if (r != null && pages.size > r.last) {
+      picking = true
+      return
+    }
+    if (r != null && pages.size < r.first) {
+      error = "This item takes ${PageLimits.describe(r)}: add ${r.first - pages.size} more."
+      return
+    }
     val files = pages.toList()
     val asPdf = format == OutputFormat.PDF
     val ocr = asPdf && searchable
@@ -457,7 +519,7 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
     if (list.isEmpty()) return null
     return Draft(
       draft.key, "scan", draftTitle, presetId, itemIndex, studentId,
-      list.map { DraftPage(it.file.path, recipe = it.recipe, warning = it.warning, checkCorners = it.checkCorners) },
+      list.map { DraftPage(it.file.path, pdfPage = it.pdfPage, recipe = it.recipe, warning = it.warning, checkCorners = it.checkCorners) },
       mapOf("format" to format.name, "maxKb" to maxKbText, "searchable" to searchable.toString()),
     )
   }
@@ -471,7 +533,7 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
       val back = withContext(Dispatchers.Default) {
         d.pages.map { p ->
           val f = File(p.file)
-          Page(f, pageThumb(f, p.recipe), p.recipe, p.warning, p.checkCorners)
+          Page(f, pageThumb(f, p.pdfPage, p.recipe), p.recipe, p.warning, p.checkCorners, p.pdfPage)
         }
       }
       // (before any pages added meanwhile)
@@ -490,8 +552,8 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
     // pages chosen for this item in the page picker: a fresh start (an older draft is replaced)
     val handed = Handoff.take(draft.key)
     if (handed != null) {
-      draft.beginFresh()
-      addHandedOver(handed)
+      // (an unfinished one for this item is not thrown away without asking)
+      draft.beginWith { addHandedOver(handed) }
     } else {
       draft.begin(resume)
     }
@@ -565,6 +627,11 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
   }
 
   DraftOffer(vm.draft)
+  if (vm.picking) {
+    vm.range?.let { r ->
+      PagePickerDialog(vm.pages.map { it.thumb }, r, vm.limitTitle, onUse = { vm.usePicked(it) }, onDismiss = { vm.picking = false })
+    }
+  }
   Scaffold(
     topBar = { DocTopBar("Scan document", onBack, subtitle = vm.preset?.let { "Preset: ${it.name}" } ?: "Certificates, marksheets") },
     bottomBar = {

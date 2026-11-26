@@ -210,7 +210,10 @@ fun DocReadyApp() {
       }, resume = args.resume())
     }
     composable(Routes.ITEM_CHOOSE) {
-      ItemChooserScreen(back) { presetId, i ->
+      ItemChooserScreen({
+        Intake.dismissIf(IntakeTarget.ITEM)
+        back()
+      }) { presetId, i ->
         nav.popBackStack()
         nav.navigate(Routes.tool("item-add", presetId, i))
       }

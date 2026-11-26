@@ -521,8 +521,8 @@ class PhotoViewModel(app: Application, private val presetId: String?, private va
     // a page chosen for this item in the page picker: a fresh start (an older draft is replaced)
     val handed = Handoff.take(draft.key)?.firstOrNull()
     if (handed != null) {
-      draft.beginFresh()
-      setSourceFile(handed.file)
+      // (an unfinished one for this item is not thrown away without asking)
+      draft.beginWith { setSourceFile(handed.file).join() }
     } else {
       draft.begin(resume)
     }

@@ -71,6 +71,11 @@ object Intake {
     _request.value = null
   }
 
+  /** Files waiting for [target] dropped (its screen closed without taking them) */
+  fun dismissIf(target: IntakeTarget) {
+    if (_request.value?.target == target) _request.value = null
+  }
+
   /** A share's files copied into the app (blocking: call off the main thread); `second` = how many were skipped */
   fun copyShared(context: Context, intent: Intent): Pair<List<IncomingFile>, Int> {
     val uris = mutableListOf<Uri>()

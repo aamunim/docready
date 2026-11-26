@@ -15,7 +15,12 @@ enum class PageKind {
 }
 
 /** One page handed to a tool: a picture file (a PDF's page already made into one) */
-class HandoffPage(val file: File, val kind: PageKind)
+class HandoffPage(
+  val file: File,
+  val kind: PageKind,
+  /** A PDF's page: [file] is the PDF itself, made into a picture by the tool only when needed */
+  val pdfPage: Int = -1,
+)
 
 /**
  * Pages chosen for a preset item (the page picker), handed to the tool that makes the item's

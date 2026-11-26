@@ -99,6 +99,7 @@ import com.docready.aamunim.ui.components.DraftOffer
 import com.docready.aamunim.ui.components.ErrorText
 import com.docready.aamunim.ui.components.SectionLabel
 import com.docready.aamunim.ui.components.VSpace
+import com.docready.aamunim.ui.components.PickTile
 import com.docready.aamunim.ui.components.findActivity
 import com.docready.aamunim.ui.theme.DocReadyColors
 import kotlinx.coroutines.Job
@@ -161,15 +162,25 @@ class ItemUploadViewModel(
   fun addScanned(uris: List<Uri>) = add(uris.map { u -> Source({ FileNames.copyIn(ctx, u, "jpg") }, "image/jpeg", "scan") }, PageKind.SCANNED)
 
   /** Pictures and PDFs picked in the gallery or the file picker */
-  fun addUris(uris: List<Uri>) = add(
-    uris.map { u ->
-      val type = ctx.contentResolver.getType(u) ?: ""
-      val name = FileNames.displayName(ctx, u) ?: "file"
-      val pdf = type == "application/pdf" || name.lowercase().endsWith(".pdf")
-      Source({ FileNames.copyIn(ctx, u, if (pdf) "pdf" else "img") }, if (pdf) "application/pdf" else "image/*", name)
-    },
-    PageKind.PHOTO,
-  )
+  fun addUris(uris: List<Uri>) {
+    if (uris.isEmpty()) return
+    viewModelScope.launch {
+      // (the provider is asked off the main thread)
+      val sources = withContext(Dispatchers.IO) {
+        uris.map { u ->
+          val type = try {
+            ctx.contentResolver.getType(u) ?: ""
+          } catch (_: Exception) {
+            ""
+          }
+          val name = FileNames.displayName(ctx, u) ?: "file"
+          val pdf = type == "application/pdf" || name.lowercase().endsWith(".pdf")
+          Source({ FileNames.copyIn(ctx, u, if (pdf) "pdf" else "img") }, if (pdf) "application/pdf" else "image/*", name)
+        }
+      }
+      add(sources, PageKind.PHOTO)
+    }
+  }
 
   fun addIncoming(files: List<IncomingFile>) = add(files.filter { !it.isPreset }.map { f -> Source({ f.file }, f.mime, f.name) }, PageKind.PHOTO)
 
@@ -180,6 +191,7 @@ class ItemUploadViewModel(
     viewModelScope.launch {
       busy = "Opening the files…"
       error = null
+      val before = pages.size
       try {
         // everything copied in and counted first: more than the app takes at once is refused whole
         val opened = withContext(Dispatchers.IO) {
@@ -191,6 +203,8 @@ class ItemUploadViewModel(
         }
         val total = pages.size + opened.sumOf { it.third }
         if (total > PdfTools.PAGE_LIMIT) {
+          // (the copies just made are not kept)
+          withContext(Dispatchers.IO) { opened.forEach { it.second.delete() } }
           error = "That is $total pages: DocReady takes up to ${PdfTools.PAGE_LIMIT} at once. Choose fewer files or pages."
           return@launch
         }
@@ -216,13 +230,22 @@ class ItemUploadViewModel(
       } finally {
         busy = null
       }
-      afterAdding()
+      afterAdding(before)
     }
   }
 
-  /** Within the item's limit: straight on (no picking); else the picker, with suggestions */
-  private fun afterAdding() {
+  /**
+   * Within the item's limit: straight on (no picking); else the picker, with suggestions. Pages
+   * added while the picker shows join the choice (after the ones chosen, while there is room)
+   * and wait for "Use selected": the chosen order is never lost.
+   */
+  private fun afterAdding(before: Int) {
     if (pages.isEmpty()) return
+    if (picking) {
+      for (p in pages.drop(before)) if (PageLimits.canSelectMore(selected.size, range)) selected.add(p)
+      suggest()
+      return
+    }
     if (!PageLimits.needsPicking(pages.size, range)) {
       selected.clear()
       selected.addAll(pages)
@@ -281,11 +304,15 @@ class ItemUploadViewModel(
         val handed = withContext(Dispatchers.Default) {
           chosen.map { u ->
             val src = u.page.source ?: throw IllegalStateException("A page is no longer on the phone: add it again.")
-            if (u.page.pdfPage >= 0) {
-              val b = PdfTools.atBestSize { side -> PdfTools.renderPage(src, u.page.pdfPage, side) }
-              HandoffPage(DocTools.keepPage(ctx, b), PageKind.PDF)
-            } else {
-              HandoffPage(src, u.kind)
+            when {
+              u.page.pdfPage < 0 -> HandoffPage(src, u.kind)
+              // a document: the PDF and the page number (Scan makes it into a picture when needed)
+              tool == "scan" -> HandoffPage(src, PageKind.PDF, u.page.pdfPage)
+              // a photo / signature: its one page made now
+              else -> {
+                val b = PdfTools.atBestSize { side -> PdfTools.renderPage(src, u.page.pdfPage, side) }
+                HandoffPage(DocTools.keepPage(ctx, b), PageKind.PDF)
+              }
             }
           }
         }
@@ -525,7 +552,10 @@ fun ItemUploadScreen(
         itemsIndexed(vm.pages, key = { i, _ -> i }) { i, p ->
           val order = vm.selected.indexOf(p)
           PickTile(
-            p, i, order, vm.looksLikeIt[p] == true, item.title,
+            p.page.thumb,
+            "${i + 1} · ${p.page.from}",
+            order,
+            if (vm.looksLikeIt[p] == true) "Looks like ${item.title}?" else null,
             onTap = { vm.toggle(p)?.let { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() } },
             onZoom = { zoom = p },
           )
@@ -534,57 +564,6 @@ fun ItemUploadScreen(
     }
   }
   zoom?.let { p -> PageZoom(p, vm, onClose = { zoom = null }) }
-}
-
-/** One page in the picker: its picture, its place in the choice (a number), a suggestion */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun PickTile(p: UploadPage, index: Int, order: Int, suggested: Boolean, itemTitle: String, onTap: () -> Unit, onZoom: () -> Unit) {
-  val chosen = order >= 0
-  val extra = DocReadyColors.extra
-  Column(horizontalAlignment = Alignment.CenterHorizontally) {
-    Box(
-      Modifier
-        .fillMaxWidth()
-        .aspectRatio(0.72f)
-        .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
-        .combinedClickable(onClick = onTap, onLongClick = onZoom),
-    ) {
-      Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(
-          if (chosen) 3.dp else if (suggested) 2.dp else 1.dp,
-          if (chosen) MaterialTheme.colorScheme.primary else if (suggested) extra.warningBorder else MaterialTheme.colorScheme.outline,
-        ),
-        modifier = Modifier.fillMaxSize(),
-      ) {
-        p.page.thumb?.let { Image(it, contentDescription = "Page ${index + 1}", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(3.dp)) }
-      }
-      if (chosen) {
-        Box(
-          Modifier.padding(4.dp).size(26.dp).background(MaterialTheme.colorScheme.primary, CircleShape),
-          contentAlignment = Alignment.Center,
-        ) { Text("${order + 1}", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
-      }
-      IconButton(onClick = onZoom, modifier = Modifier.align(Alignment.TopEnd).size(34.dp)) {
-        Icon(AppIcons.Search, contentDescription = "See page ${index + 1} large", modifier = Modifier.size(18.dp))
-      }
-    }
-    Text("${index + 1} · ${p.page.from}", style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    if (suggested) {
-      Surface(shape = RoundedCornerShape(6.dp), color = extra.warningContainer) {
-        Text(
-          "Looks like $itemTitle?",
-          color = extra.onWarningContainer,
-          style = MaterialTheme.typography.labelSmall,
-          maxLines = 2,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-        )
-      }
-    }
-  }
 }
 
 /** A page large (made in the background), to choose by */
@@ -609,6 +588,8 @@ private fun PageZoom(p: UploadPage, vm: ItemUploadViewModel, onClose: () -> Unit
 @Composable
 fun ItemChooserScreen(onBack: () -> Unit, onChosen: (presetId: String, index: Int) -> Unit) {
   val presets by LocalContext.current.docReady.presets.presets.collectAsState()
+  // closed without a choice: the shared files are not left waiting for a later Add
+  androidx.activity.compose.BackHandler { onBack() }
   Scaffold(topBar = { DocTopBar("Use for a preset item", onBack, subtitle = "Choose the form's preset and the paper") }) { padding ->
     if (presets.isEmpty()) {
       Column(Modifier.padding(padding).padding(16.dp)) { Text("No presets yet: make one first (Home → Presets).") }
