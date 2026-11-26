@@ -42,6 +42,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.draw.drawBehind
 import com.docready.aamunim.ui.theme.DocReadyColors
 import com.docready.aamunim.ui.theme.SectionLabelStyle
 
@@ -143,6 +144,34 @@ fun CircleIconButton(icon: ImageVector, description: String, onClick: () -> Unit
     modifier = modifier.size(44.dp),
   ) {
     Box(contentAlignment = Alignment.Center) { Icon(icon, contentDescription = description, modifier = Modifier.size(20.dp)) }
+  }
+}
+
+/** A dashed outline (suggestions, missing items, "New …" buttons) */
+fun Modifier.dashedBorder(color: androidx.compose.ui.graphics.Color, radius: androidx.compose.ui.unit.Dp, width: androidx.compose.ui.unit.Dp = 1.dp): Modifier =
+  drawBehind {
+    val stroke = androidx.compose.ui.graphics.drawscope.Stroke(
+      width = width.toPx(),
+      pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx())),
+    )
+    val r = radius.toPx()
+    drawRoundRect(color, cornerRadius = androidx.compose.ui.geometry.CornerRadius(r, r), style = stroke)
+  }
+
+/** A progress ring (64 dp) with its text in the middle ("3/5") */
+@Composable
+fun ProgressRing(fraction: Float, text: String, size: androidx.compose.ui.unit.Dp = 64.dp) {
+  val track = DocReadyColors.extra.chip
+  val fill = MaterialTheme.colorScheme.primary
+  Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+    androidx.compose.foundation.Canvas(Modifier.size(size)) {
+      val w = 6.dp.toPx()
+      val inset = w / 2
+      val arc = androidx.compose.ui.geometry.Size(this.size.width - w, this.size.height - w)
+      drawArc(track, 0f, 360f, false, topLeft = androidx.compose.ui.geometry.Offset(inset, inset), size = arc, style = androidx.compose.ui.graphics.drawscope.Stroke(w))
+      drawArc(fill, -90f, 360f * fraction.coerceIn(0f, 1f), false, topLeft = androidx.compose.ui.geometry.Offset(inset, inset), size = arc, style = androidx.compose.ui.graphics.drawscope.Stroke(w))
+    }
+    Text(text, fontFamily = com.docready.aamunim.ui.theme.Manrope, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp)
   }
 }
 

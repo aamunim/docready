@@ -35,6 +35,19 @@ class StudentRepository(
   /** Most recently changed first */
   val students: StateFlow<List<Student>> = _students.asStateFlow()
 
+  /** What pages made for a student said about them (name, roll…), offered on their page until used */
+  private val _facts = MutableStateFlow<Map<String, List<com.docready.aamunim.imaging.Fact>>>(emptyMap())
+  val facts: StateFlow<Map<String, List<com.docready.aamunim.imaging.Fact>>> = _facts.asStateFlow()
+
+  fun offerFacts(id: String, list: List<com.docready.aamunim.imaging.Fact>) {
+    if (list.isEmpty()) return
+    _facts.value = _facts.value + (id to (list + (_facts.value[id] ?: emptyList())).distinct())
+  }
+
+  fun dropFact(id: String, f: com.docready.aamunim.imaging.Fact) {
+    _facts.value = _facts.value + (id to (_facts.value[id] ?: emptyList()).filter { it != f })
+  }
+
   fun get(id: String?): Student? = if (id == null) null else _students.value.firstOrNull { it.id == id }
 
   fun save(s: Student): Student {

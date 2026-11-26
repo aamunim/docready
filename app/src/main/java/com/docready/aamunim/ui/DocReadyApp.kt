@@ -207,6 +207,7 @@ fun DocReadyApp() {
         onBack = back,
         onEdit = { nav.navigate(Routes.studentEdit(id)) },
         onMake = { tool, presetId, i -> nav.navigate(Routes.tool(tool, presetId, i, id)) },
+        onOpenFolder = { nav.navigate(Routes.folder(it)) },
       )
     }
     composable(Routes.STUDENT_EDIT) { entry ->
