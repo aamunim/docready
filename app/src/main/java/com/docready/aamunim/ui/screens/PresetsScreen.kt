@@ -61,6 +61,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.docready.aamunim.data.FileNames
 import com.docready.aamunim.data.PresetCodec
+import com.docready.aamunim.data.model.PageLimits
+import com.docready.aamunim.data.model.withPageNumbers
 import com.docready.aamunim.data.PresetRepository
 import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.data.model.OutputFormat
@@ -397,12 +399,14 @@ private class EditItem(item: PresetItem) {
   var background by mutableStateOf(item.background ?: PhotoBackground.WHITE)
   var name by mutableStateOf(item.name ?: "")
   var required by mutableStateOf(item.required)
-  var pagesHint by mutableStateOf(item.pagesHint ?: "")
+  /** A document's pages: exactly N, up to N, or any number */
+  var pagesMode by mutableStateOf(PagesMode.of(item.withPageNumbers()))
+  var pagesN by mutableStateOf(((item.withPageNumbers().maxPages ?: 1).takeIf { it < PageLimits.ANY } ?: 1).toString())
   var keywords by mutableStateOf(item.keywords.joinToString(", "))
 
   /** As text, to be kept in the saved screen state */
   fun toSaved(): ArrayList<String> =
-    arrayListOf(kind.name, width, height, maxKb, format.name, background.name, name, required.toString(), pagesHint, id, keywords)
+    arrayListOf(kind.name, width, height, maxKb, format.name, background.name, name, required.toString(), "", id, keywords, pagesMode.name, pagesN)
 
   companion object {
     fun fromSaved(v: List<String>): EditItem = EditItem(PresetItem(ItemKind.valueOf(v[0]))).apply {
@@ -413,9 +417,10 @@ private class EditItem(item: PresetItem) {
       background = PhotoBackground.valueOf(v[5])
       name = v.getOrNull(6) ?: ""
       required = v.getOrNull(7)?.toBooleanStrictOrNull() ?: true
-      pagesHint = v.getOrNull(8) ?: ""
       id = v.getOrNull(9) ?: ""
       keywords = v.getOrNull(10) ?: ""
+      pagesMode = v.getOrNull(11)?.let { m -> PagesMode.entries.firstOrNull { it.name == m } } ?: PagesMode.UP_TO
+      pagesN = v.getOrNull(12) ?: "1"
     }
 
     fun newOf(kind: ItemKind): EditItem = EditItem(
@@ -469,6 +474,11 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
         error = "Item ${i + 1}: max KB must be 2 to 50000 (or empty for no limit)."
         return null
       }
+      val n = e.pagesN.toIntOrNull()
+      if (e.kind == ItemKind.DOCUMENT && e.pagesMode != PagesMode.ANY && (n == null || n !in 1..PageLimits.ANY)) {
+        error = "Item ${i + 1}: pages must be 1 to ${PageLimits.ANY}."
+        return null
+      }
       val format = when (e.kind) {
         ItemKind.DOCUMENT -> if (e.format == OutputFormat.JPG) OutputFormat.JPG else OutputFormat.PDF
         ItemKind.PHOTO -> OutputFormat.JPG
@@ -483,7 +493,9 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
         background = if (e.kind == ItemKind.PHOTO) e.background else null,
         name = e.name.trim().take(60).ifEmpty { null },
         required = e.required,
-        pagesHint = if (e.kind == ItemKind.DOCUMENT) e.pagesHint.trim().take(20).ifEmpty { null } else null,
+        // (a document made as a picture is one page: JPG takes exactly one)
+        minPages = if (e.kind != ItemKind.DOCUMENT || format == OutputFormat.JPG) null else e.pagesMode.min(n ?: 1),
+        maxPages = if (e.kind != ItemKind.DOCUMENT) null else if (format == OutputFormat.JPG) 1 else e.pagesMode.max(n ?: 1),
         id = e.id,
         keywords = e.keywords.split(',').map { it.trim().take(30) }.filter { it.isNotEmpty() }.distinct().take(20),
       )
@@ -627,15 +639,16 @@ private fun ItemEditor(i: Int, e: EditItem, items: SnapshotStateList<EditItem>) 
           NumberField("Height px", e.height, { e.height = it }, Modifier.weight(1f))
         }
         NumberField("Max KB", e.maxKb, { e.maxKb = it }, Modifier.weight(1f))
-        if (e.kind == ItemKind.DOCUMENT) {
-          OutlinedTextField(
-            value = e.pagesHint,
-            onValueChange = { e.pagesHint = it.take(20) },
-            label = { Text("Pages") },
-            placeholder = { Text("1–2") },
-            singleLine = true,
-            modifier = Modifier.weight(1f),
-          )
+        if (e.kind == ItemKind.DOCUMENT && e.pagesMode != PagesMode.ANY && e.format != OutputFormat.JPG) {
+          NumberField("Pages", e.pagesN, { e.pagesN = it.filter { c -> c.isDigit() }.take(3) }, Modifier.weight(1f))
+        }
+      }
+      if (e.kind == ItemKind.DOCUMENT) {
+        VSpace(8)
+        if (e.format == OutputFormat.JPG) {
+          Text("A JPG is one page.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+          ChoiceChips(PagesMode.entries.toList(), e.pagesMode, { it.title }, { e.pagesMode = it })
         }
       }
       if (e.kind == ItemKind.DOCUMENT) {
@@ -675,3 +688,26 @@ private fun ItemEditor(i: Int, e: EditItem, items: SnapshotStateList<EditItem>) 
 /** The file-name tokens a preset gives ({preset}, and its own pattern if it has one) */
 fun presetNaming(p: Preset?): com.docready.aamunim.data.NameContext =
   com.docready.aamunim.data.NameContext(preset = p?.name, presetPattern = p?.namePattern)
+
+/** A document item's pages in the preset editor */
+private enum class PagesMode(val title: String) {
+  EXACTLY("Exactly N"),
+  UP_TO("Up to N"),
+  ANY("Any");
+
+  fun min(n: Int): Int? = if (this == EXACTLY) n else null
+
+  fun max(n: Int): Int = if (this == ANY) PageLimits.ANY else n
+
+  companion object {
+    fun of(item: PresetItem): PagesMode {
+      val hi = item.maxPages ?: 1
+      val lo = item.minPages ?: 1
+      return when {
+        hi >= PageLimits.ANY -> ANY
+        lo == hi && hi > 1 -> EXACTLY
+        else -> UP_TO
+      }
+    }
+  }
+}

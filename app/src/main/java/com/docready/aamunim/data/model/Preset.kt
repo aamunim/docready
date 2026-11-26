@@ -32,7 +32,10 @@ data class PresetItem(
   val name: String? = null,
   /** The form can't be sent without it (false = optional) */
   val required: Boolean = true,
-  /** A document's pages, as the form says ("1-2"); a hint only */
+  /**
+   * (older versions: a document's pages as free text, "1-2"; read once into [minPages] /
+   * [maxPages], and still written for older versions of the app)
+   */
   val pagesHint: String? = null,
   /**
    * Stays the same when items are reordered, renamed or others deleted (a student's files are
@@ -41,6 +44,10 @@ data class PresetItem(
   val id: String = "",
   /** Words on the paper that tell it apart (Split by preset suggests pages with them): optional */
   val keywords: List<String> = emptyList(),
+  /** A document's fewest pages (null = 1) */
+  val minPages: Int? = null,
+  /** A document's most pages (null = 1; [PageLimits.ANY] = any number). Photos, signatures: 1 */
+  val maxPages: Int? = null,
 )
 
 /** Every item with an id (new or older items get a fresh one) */

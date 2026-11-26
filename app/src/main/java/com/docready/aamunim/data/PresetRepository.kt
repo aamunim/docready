@@ -6,6 +6,8 @@ import com.docready.aamunim.data.model.OutputFormat
 import com.docready.aamunim.data.model.PhotoBackground
 import com.docready.aamunim.data.model.Preset
 import com.docready.aamunim.data.model.withItemIds
+import com.docready.aamunim.data.model.PageLimits
+import com.docready.aamunim.data.model.withPageNumbers
 import com.docready.aamunim.data.model.PresetItem
 import com.docready.aamunim.data.model.safeFileName
 import com.docready.aamunim.data.model.title
@@ -32,7 +34,8 @@ class PresetRepository(context: Context) {
   fun get(id: String?): Preset? = if (id == null) null else _presets.value.firstOrNull { it.id == id }
 
   fun save(preset: Preset): Preset {
-    val stored = preset.withItemIds(::newId).copy(builtIn = false, updatedAt = System.currentTimeMillis())
+    val stored = preset.withItemIds(::newId).let { it.copy(items = it.items.map { i -> i.withPageNumbers() }) }
+      .copy(builtIn = false, updatedAt = System.currentTimeMillis())
     synchronized(lock) {
       write(_presets.value.filter { it.id != stored.id } + stored)
     }
@@ -118,7 +121,9 @@ class PresetRepository(context: Context) {
     if (file.exists()) {
       val loaded = AppJson.decodeFromString(ListSerializer(Preset.serializer()), file.readText())
       // items saved by older versions get their ids now, kept from then on
-      val list = loaded.map { it.withItemIds(::newId).copy(builtIn = false) }.sortedBy { it.name.lowercase() }
+      // (and their old "pages" text read into page numbers)
+      val list = loaded.map { p -> p.withItemIds(::newId).let { it.copy(items = it.items.map { i -> i.withPageNumbers() }) }.copy(builtIn = false) }
+        .sortedBy { it.name.lowercase() }
       if (list.zip(loaded.sortedBy { it.name.lowercase() }).any { (a, b) -> a.items != b.items }) {
         // (a failed write-back, e.g. a full disk, must never lose the presets: written next save)
         try {
@@ -173,7 +178,7 @@ object PresetCodec {
   /** The preset as a file in the app's share folder, named after it */
   fun write(context: Context, preset: Preset): File {
     val out = FileNames.outputFile(context, safeFileName(preset.name, "preset") + EXTENSION)
-    val doc = PresetFile(FORMAT, 1, SharedPreset(preset.name, preset.items, preset.namePattern))
+    val doc = PresetFile(FORMAT, 1, SharedPreset(preset.name, preset.items.map { it.forSharing() }, preset.namePattern))
     out.writeText(strict.encodeToString(PresetFile.serializer(), doc))
     return out
   }
@@ -186,7 +191,7 @@ object PresetCodec {
 
   /** The preset as compact JSON in the shared file's format (the same checks read it back) */
   fun encodeCompact(preset: Preset): String =
-    compact.encodeToString(PresetFile.serializer(), PresetFile(FORMAT, 1, SharedPreset(preset.name, preset.items.map { it.copy(id = "") }, preset.namePattern)))
+    compact.encodeToString(PresetFile.serializer(), PresetFile(FORMAT, 1, SharedPreset(preset.name, preset.items.map { it.forSharing().copy(id = "") }, preset.namePattern)))
 
   fun read(file: File): Preset {
     if (!file.exists() || file.length() == 0L) throw IllegalArgumentException("The file is empty.")
@@ -230,6 +235,12 @@ object PresetCodec {
       ItemKind.PHOTO -> OutputFormat.JPG
       ItemKind.SIGNATURE -> if (item.format == OutputFormat.PNG) OutputFormat.PNG else OutputFormat.JPG
     }
+    val pages: Pair<Int?, Int> = if (item.maxPages != null) {
+      val hi = item.maxPages.coerceIn(1, PageLimits.ANY)
+      item.minPages?.coerceIn(1, hi) to hi
+    } else {
+      PageLimits.migrate(item.pagesHint?.take(20))
+    }
     return PresetItem(
       kind = item.kind,
       widthPx = if (item.kind == ItemKind.DOCUMENT) null else w,
@@ -239,12 +250,21 @@ object PresetCodec {
       background = if (item.kind == ItemKind.PHOTO) item.background ?: PhotoBackground.WHITE else null,
       name = item.name?.let { clean(it, 60) }?.ifEmpty { null },
       required = item.required,
-      pagesHint = if (item.kind == ItemKind.DOCUMENT) item.pagesHint?.let { clean(it, 20) }?.ifEmpty { null } else null,
+      // page numbers (checked); a file from an older version has only its "pages" text
+      minPages = if (item.kind == ItemKind.DOCUMENT) pages.first else null,
+      maxPages = if (item.kind == ItemKind.DOCUMENT) pages.second else null,
       // (ids from the file are not trusted: an imported preset's items get their own)
       id = PresetRepository.newId(),
       keywords = item.keywords.map { clean(it, 30) }.filter { it.isNotEmpty() }.distinct().take(20),
     )
   }
+
+  /**
+   * An item as it is shared: its page numbers, and for older versions of the app the same as
+   * their "pages" text too
+   */
+  private fun PresetItem.forSharing(): PresetItem =
+    if (kind == ItemKind.DOCUMENT) copy(pagesHint = PageLimits.hintOf(minPages, maxPages)) else copy(pagesHint = null)
 
   /** Plain text only: control marks out, trimmed, at most [max] characters (letters of any script stay) */
   private fun clean(s: String, max: Int): String = s.replace(Regex("\\p{Cntrl}"), " ").trim().take(max).trim()
