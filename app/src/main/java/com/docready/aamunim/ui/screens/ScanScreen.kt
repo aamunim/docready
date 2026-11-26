@@ -1,5 +1,15 @@
 package com.docready.aamunim.ui.screens
 
+import com.docready.aamunim.ui.components.dashedBorder
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.border
+import androidx.compose.foundation.background
 import kotlinx.coroutines.delay
 import com.docready.aamunim.ui.components.animationsEnabled
 import com.docready.aamunim.ui.components.ScanAnimationCard
@@ -178,6 +188,14 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
   var result by mutableStateOf<FilesResult?>(null)
   var error by mutableStateOf<String?>(null)
 
+  /** The pages being cleaned: how many, how many done, what the last one got */
+  var cleanTotal by mutableStateOf(0)
+    private set
+  var cleanDone by mutableStateOf(0)
+    private set
+  var cleanSteps by mutableStateOf<List<String>>(emptyList())
+    private set
+
   /** The page being cleaned right now, for the scanning animation (null = none) */
   var anim by mutableStateOf<ScanAnim?>(null)
     private set
@@ -227,6 +245,9 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
       error = null
       result = null
       val list = items.take(PdfTools.PAGE_LIMIT)
+      cleanTotal = list.size
+      cleanDone = 0
+      cleanSteps = emptyList()
       val animated = animationsEnabled(ctx)
       try {
         for ((n, item) in list.withIndex()) {
@@ -265,6 +286,13 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
             Page(f, tile, recipe, if (pdfPage >= 0) null else qualityWarning(f), checkCorners = photos, pdfPage = pdfPage) to shown.asImageBitmap()
           }
           pages.add(page)
+          cleanDone = n + 1
+          cleanSteps = buildList {
+            if (page.recipe.look == com.docready.aamunim.data.model.Look.MAGIC) add("Shadow removed")
+            if (page.recipe.look == com.docready.aamunim.data.model.Look.MAGIC) add("Paper evened")
+            if (page.recipe.fingers) add("Finger removed") else if (page.recipe.fingerBoxes.isNotEmpty()) add("Finger found")
+            if (page.recipe.isPlain) add("Kept as it was")
+          }
           anim = anim?.copy(after = cleaned, done = true, label = if (list.size == 1) "Page ready" else "Page ${n + 1} of ${list.size} ready")
           // (a moment to see the reveal and the tick; none when animations are off)
           // (only short batches and the last page pause: never slowing a long scan down)
@@ -632,6 +660,11 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
       PagePickerDialog(vm.pages.map { it.thumb }, r, vm.limitTitle, onUse = { vm.usePicked(it) }, onDismiss = { vm.picking = false })
     }
   }
+  // pages being cleaned: the dark scanning screen (as the editor), then back to the list
+  vm.anim?.let { a ->
+    CleaningScreen(a, vm)
+    return
+  }
   Scaffold(
     topBar = { DocTopBar("Scan document", onBack, subtitle = vm.preset?.let { "Preset: ${it.name}" } ?: "Certificates, marksheets") },
     bottomBar = {
@@ -668,9 +701,6 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
         .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
       val result = vm.result
-      vm.anim?.let {
-        ScanAnimationCard(it, Modifier.padding(bottom = 12.dp))
-      }
       if (vm.pages.isEmpty()) {
         Text(
           "Google's scanner finds the page edges, straightens them and removes shadows. " +
@@ -798,3 +828,66 @@ private fun PageNote(text: String) {
 
 /** The animation's page pictures: about a phone screen's width */
 private const val PREVIEW = 900
+
+/** "Cleaning page 2 of 5…": the page sweeping clean, what it got, and the pages so far */
+@Composable
+private fun CleaningScreen(anim: ScanAnim, vm: ScanViewModel) {
+  com.docready.aamunim.ui.theme.EditorTheme {
+    val c = com.docready.aamunim.ui.theme.EditorColors
+    Column(Modifier.fillMaxSize().background(c.Background).systemBarsPadding()) {
+      Column(Modifier.fillMaxWidth().height(60.dp).padding(horizontal = 20.dp), verticalArrangement = Arrangement.Center) {
+        Text(anim.label, color = c.Text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Text("Magic · shadows, folds and fingers", color = c.TextDim, fontSize = 12.sp)
+      }
+      Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+        ScanAnimationCard(anim, height = 424, textColor = c.Text)
+      }
+      // what the last page got
+      Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+      ) {
+        for (step in vm.cleanSteps) {
+          val amber = step.startsWith("Finger")
+          Row(
+            Modifier.height(30.dp)
+              .background(if (amber) c.AmberSoft else c.Panel, RoundedCornerShape(15.dp))
+              .border(1.dp, if (amber) c.AmberLine else c.Line, RoundedCornerShape(15.dp))
+              .padding(horizontal = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            if (!amber) {
+              Icon(AppIcons.Check, contentDescription = null, tint = c.Accent, modifier = Modifier.size(14.dp))
+              Spacer(Modifier.width(6.dp))
+            }
+            Text(step, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (amber) c.AmberText else c.OnSelected)
+          }
+        }
+      }
+      // the pages: done ones with a tick, the ones to come as dashed places
+      Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 22.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+      ) {
+        val done = vm.pages.takeLast(vm.cleanDone)
+        for (p in done) {
+          Box(Modifier.size(width = 46.dp, height = 62.dp)) {
+            Box(Modifier.fillMaxSize().background(Color.White, RoundedCornerShape(6.dp)).border(2.dp, c.Accent, RoundedCornerShape(6.dp))) {
+              p.thumb?.let { Image(it, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(2.dp)) }
+            }
+            Box(Modifier.align(Alignment.TopEnd).offset(6.dp, (-6).dp).size(18.dp).background(c.Accent, CircleShape), contentAlignment = Alignment.Center) {
+              Text("✓", color = c.OnAccent, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+            }
+          }
+        }
+        repeat(maxOf(0, vm.cleanTotal - vm.cleanDone)) { i ->
+          Box(
+            Modifier.size(width = 46.dp, height = 62.dp)
+              .background(if (i == 0) Color(0xFFDCD3BF) else c.PanelHigh, RoundedCornerShape(6.dp))
+              .then(if (i == 0) Modifier.border(2.dp, c.Text, RoundedCornerShape(6.dp)) else Modifier.dashedBorder(c.Line, 6.dp)),
+          )
+        }
+      }
+    }
+  }
+}
