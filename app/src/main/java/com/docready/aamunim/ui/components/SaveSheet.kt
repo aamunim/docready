@@ -1,5 +1,15 @@
 package com.docready.aamunim.ui.components
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
+import androidx.compose.material3.TextButton
+import com.docready.aamunim.ui.components.AppCard
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
@@ -87,6 +97,7 @@ fun SaveSheet(
   var folder by rememberSaveable { mutableStateOf(defaultFolder) }
   var toPhone by rememberSaveable { mutableStateOf(true) }
   var asZip by rememberSaveable { mutableStateOf(false) }
+  var choosing by remember { mutableStateOf(false) }
   var busy by remember { mutableStateOf<String?>(null) }
   var error by remember { mutableStateOf<String?>(null) }
   // the files as they are now ("Fix to fit" replaces the ones it shrinks)
@@ -138,19 +149,24 @@ fun SaveSheet(
         .verticalScroll(rememberScrollState())
         .padding(start = 20.dp, end = 20.dp, bottom = 28.dp),
     ) {
-      Text(
-        if (items.size == 1) "Save “${names.firstOrNull() ?: ""}”" else "Save ${items.size} files",
-        style = MaterialTheme.typography.titleLarge,
-      )
-      Text(
-        "Pick where. Nothing leaves the phone unless you share it.",
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(top = 4.dp),
-      )
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Ready to save", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+        Text(
+          "${items.size} file${if (items.size == 1) "" else "s"} · ${bytesText(items.sumOf { it.file.length() })}",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
       // the size check: each file against its item's limit
-      VSpace(10)
-      items.forEachIndexed { i, f -> SizeRow(names[i], f, facts[f.file]) }
+      VSpace(14)
+      AppCard(Modifier.fillMaxWidth()) {
+        Column {
+          items.forEachIndexed { i, f ->
+            if (i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            FileSizeRow(names[i], f, facts[f.file])
+          }
+        }
+      }
       if (tooBig.isNotEmpty()) {
         OutlinedButton(
           onClick = {
@@ -189,37 +205,53 @@ fun SaveSheet(
             }
           },
           enabled = busy == null,
-          modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-        ) { Text("Fix to fit (${tooBig.size} too big)") }
-      }
-      VSpace(14)
-      OutlinedTextField(
-        value = folder,
-        onValueChange = { folder = it.take(60) },
-        label = { Text("Folder") },
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
-      )
-      val recent = folders.map { it.name }.filter { it != folder }.take(6)
-      if (recent.isNotEmpty()) {
-        Row(
-          Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 8.dp),
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.error),
+          colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+          modifier = Modifier.fillMaxWidth().padding(top = 14.dp).height(46.dp),
         ) {
-          for (name in recent) FilterChip(selected = false, onClick = { folder = name }, label = { Text(name) })
+          Icon(AppIcons.Bars, contentDescription = null, modifier = Modifier.size(18.dp))
+          Spacer(Modifier.width(8.dp))
+          Text("Fix to fit (${tooBig.size} file${if (tooBig.size == 1) "" else "s"})", fontWeight = FontWeight.Bold)
         }
       }
-      VSpace(10)
-      TargetRow(targets.phone, folder, checked = toPhone, onChecked = { toPhone = it })
-      TargetRow(targets.googleDrive, folder, checked = false, onChecked = {})
-      TargetRow(targets.ittc, folder, checked = false, onChecked = {})
-      if (items.size > 1) {
-        Row(Modifier.fillMaxWidth().clickable { asZip = !asZip }, verticalAlignment = Alignment.CenterVertically) {
-          Checkbox(checked = asZip, onCheckedChange = { asZip = it })
-          Column {
-            Text("As one ZIP", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyLarge)
-            Text("Save or share all ${items.size} files in one .zip", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      // the names the files get (the file-name pattern)
+      FieldLabel("File names")
+      Box(
+        Modifier.fillMaxWidth().heightIn(min = 44.dp).background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
+          .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 10.dp),
+        contentAlignment = Alignment.CenterStart,
+      ) {
+        Text(
+          names.firstOrNull().orEmpty() + if (names.size > 1) "  +${names.size - 1} more" else "",
+          fontFamily = FontFamily.Monospace,
+          fontSize = 13.sp,
+          color = DocReadyColors.extra.text2,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
+      // where they go
+      FieldLabel("Save to folder")
+      Surface(
+        onClick = { choosing = true },
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        modifier = Modifier.fillMaxWidth().height(48.dp),
+      ) {
+        Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+          Box(Modifier.size(30.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(9.dp)), contentAlignment = Alignment.Center) {
+            Icon(AppIcons.FolderNav, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
           }
+          Spacer(Modifier.width(10.dp))
+          Text("Downloads › DocReady › $folder", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+          Text("Change", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+        }
+      }
+      if (items.size > 1) {
+        Row(Modifier.fillMaxWidth().padding(top = 10.dp).clickable { asZip = !asZip }, verticalAlignment = Alignment.CenterVertically) {
+          Checkbox(checked = asZip, onCheckedChange = { asZip = it })
+          Text("Also make one ZIP", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
         }
       }
       busy?.let { BusyRow(it) }
@@ -241,10 +273,8 @@ fun SaveSheet(
             }
           },
           enabled = busy == null,
-          modifier = Modifier.height(52.dp),
+          modifier = Modifier.weight(1f).height(52.dp),
         ) {
-          Icon(AppIcons.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-          Spacer(Modifier.width(8.dp))
           Text(if (asZip && items.size > 1) "Share ZIP" else "Share")
         }
         Button(
@@ -272,12 +302,72 @@ fun SaveSheet(
             }
           },
           enabled = toPhone && busy == null && items.isNotEmpty(),
-          modifier = Modifier.weight(1f).height(52.dp),
+          modifier = Modifier.weight(1.4f).height(52.dp),
         ) {
-          Text(if (busy == "Saving…") "Saving…" else if (asZip && items.size > 1) "Save ZIP" else "Save to phone")
+          Text(if (busy == "Saving…") "Saving…" else if (asZip && items.size > 1) "Save ZIP" else "Save to phone", fontWeight = FontWeight.Bold)
         }
       }
     }
+  }
+  if (choosing) {
+    FolderNameDialog(folder, folders.map { it.name }, onPick = {
+      folder = it
+      choosing = false
+    }, onDismiss = { choosing = false })
+  }
+}
+
+@Composable
+private fun FieldLabel(text: String) {
+  Text(text, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 14.dp, bottom = 6.dp))
+}
+
+/** "Change" folder: a name (Downloads / DocReady / <name>), or one used before */
+@Composable
+private fun FolderNameDialog(current: String, used: List<String>, onPick: (String) -> Unit, onDismiss: () -> Unit) {
+  var name by remember { mutableStateOf(current) }
+  androidx.compose.material3.AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text("Save to folder") },
+    text = {
+      Column {
+        OutlinedTextField(value = name, onValueChange = { name = it.take(60) }, label = { Text("Folder name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        val recent = used.filter { it != name }.take(8)
+        if (recent.isNotEmpty()) {
+          Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (n in recent) FilterChip(selected = false, onClick = { name = n }, label = { Text(n) })
+          }
+        }
+      }
+    },
+    confirmButton = { Button(onClick = { onPick(FileNames.safeFolder(name)) }, enabled = name.isNotBlank()) { Text("Use") } },
+    dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+  )
+}
+
+/** A file in the save sheet: its kind, name, "X KB of Y KB · pixels / pages", and a badge */
+@Composable
+private fun FileSizeRow(name: String, f: ReadyFile, facts: FileFacts?) {
+  val bytes = facts?.bytes ?: f.file.length()
+  val st = fitState(bytes, f.maxKb)
+  val dims = when {
+    facts?.width != null && facts.height != null -> " · ${facts.width}×${facts.height}"
+    facts?.pages != null -> " · ${facts.pages} page${if (facts.pages == 1) "" else "s"}"
+    else -> ""
+  }
+  Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+    FileKindTile(name, 34)
+    Spacer(Modifier.width(12.dp))
+    Column(Modifier.weight(1f)) {
+      Text(name, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      Text(
+        bytesText(bytes) + (f.maxKb?.let { " of $it KB" } ?: "") + dims + if (st == FitState.TOO_BIG) " · too big" else "",
+        fontSize = 11.5.sp,
+        fontWeight = if (st == FitState.TOO_BIG) FontWeight.SemiBold else FontWeight.Normal,
+        color = if (st == FitState.TOO_BIG) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+    fitLabel(st)?.let { StatusBadge(it, st) }
   }
 }
 
