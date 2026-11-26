@@ -5,6 +5,7 @@ import com.docready.aamunim.data.model.SavedFile
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
@@ -48,6 +49,9 @@ data class FileRecord(
   val driveFileId: String? = null,
   val drive: DriveState = DriveState.NONE,
   val driveError: String? = null,
+  /** An unfinished resumable upload: its session address, and the size it was started for */
+  val driveSession: String? = null,
+  val driveSessionSize: Long? = null,
 )
 
 @Serializable
@@ -213,9 +217,20 @@ class FolderTree(context: Context, private val legacy: FolderRepository) {
 
   private fun newId() = UUID.randomUUID().toString()
 
-  fun path(id: String?): String = FolderLogic.pathOf(_data.value.folders, id)
+  /**
+   * The folder's path ("B.Ed/Batch 1"); null while the tree is still being read (the Folders
+   * screens show "Reading your folders…" until [loaded]). Never waits: safe on the main thread.
+   */
+  fun path(id: String?): String? = if (_loaded.value) FolderLogic.pathOf(_data.value.folders, id) else null
 
-  fun folder(id: String?): FolderNode? = _data.value.folders.firstOrNull { it.id == id }
+  /** The folder; null while the tree is still being read (or when there is no such folder). Never waits. */
+  fun folder(id: String?): FolderNode? = if (_loaded.value) _data.value.folders.firstOrNull { it.id == id } else null
+
+  /** The folder's path once the tree is read (suspends, never blocks a thread) */
+  suspend fun pathWhenRead(id: String?): String {
+    _loaded.first { it }
+    return FolderLogic.pathOf(_data.value.folders, id)
+  }
 
   /** The names already used for files in the folder at [path] (never two the same) */
   fun namesIn(path: String): Set<String> {
@@ -242,7 +257,8 @@ class FolderTree(context: Context, private val legacy: FolderRepository) {
   /** Saved files recorded in the folder at [path] (made where missing); the records */
   fun addSaved(path: String, saved: List<SavedFile>, preset: String? = null): List<FileRecord> = update { d ->
     val (folders, id) = FolderLogic.ensurePath(d.folders, path, now(), ::newId)
-    val auto = folders.firstOrNull { it.id == id }?.autoUpload == true
+    // (Auto upload queues only while Google Drive is connected)
+    val auto = folders.firstOrNull { it.id == id }?.autoUpload == true && com.docready.aamunim.drive.DriveAuth.account.value.connected
     val recs = saved.map {
       FileRecord(newId(), id, it.name, it.uri, it.mime, it.bytes, it.savedAt, it.maxKb, preset, drive = if (auto) DriveState.QUEUED else DriveState.NONE)
     }
@@ -278,7 +294,7 @@ class FolderTree(context: Context, private val legacy: FolderRepository) {
 
   fun rememberDrive(preset: String?, on: Boolean) = change { it.copy(driveByPreset = it.driveByPreset + ((preset ?: "") to on)) }
 
-  fun driveFor(preset: String?): Boolean = _data.value.driveByPreset[preset ?: ""] ?: false
+  fun driveFor(preset: String?): Boolean = ready.await().let { _data.value }.driveByPreset[preset ?: ""] ?: false
 
   fun setAutoUploadKey(key: String, on: Boolean) = change { it.copy(autoUploadKeys = if (on) it.autoUploadKeys + key else it.autoUploadKeys - key) }
 
@@ -292,8 +308,11 @@ class FolderTree(context: Context, private val legacy: FolderRepository) {
     update { block(it) to Unit }
   }
 
+  /**
+   * A change, once the tree is read (it is never written over before). Blocking: every caller
+   * runs it off the main thread (Dispatchers.IO, a worker), so the wait never blocks the UI.
+   */
   private fun <T> update(block: (FolderData) -> Pair<FolderData, T>): T {
-    // (a change waits for the tree to be read: never written over before)
     ready.await()
     return synchronized(lock) {
       val (d, r) = block(_data.value)

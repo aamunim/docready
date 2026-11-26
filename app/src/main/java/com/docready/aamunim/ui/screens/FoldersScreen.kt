@@ -234,7 +234,7 @@ fun FoldersScreen(onOpen: (String) -> Unit) {
         val files = everything.filter { it.name.contains(q, ignoreCase = true) }
         item(span = { full }) { Text("Found", style = SectionLabelStyle) }
         if (folders.isEmpty() && files.isEmpty()) item(span = { full }) { Text("Nothing found for “$q”.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        for (f in folders) item(span = { full }, key = "sf" + f.id) { FolderRow(f.name, tree.path(f.id), AppIcons.FolderNav, false) { onOpen(f.id) } }
+        for (f in folders) item(span = { full }, key = "sf" + f.id) { FolderRow(f.name, tree.path(f.id) ?: "", AppIcons.FolderNav, false) { onOpen(f.id) } }
         for (f in files.take(60)) item(span = { full }, key = "sx" + f.key) { FileListRow(f) { openFile(context, scope, f) } }
         return@LazyVerticalGrid
       }
@@ -484,7 +484,7 @@ fun FolderOpenScreen(key: String, onBack: () -> Unit, onOpen: (String) -> Unit, 
   val presetName = if (key.startsWith("preset:")) key.removePrefix("preset:") else null
   val title = folder?.name ?: student?.name ?: presetName ?: if (key == "students") "Students" else "Folder"
   val crumb = when {
-    folder != null -> "Folders › " + tree.path(folder.id).replace("/", " › ")
+    folder != null -> "Folders › " + (tree.path(folder.id) ?: folder.name).replace("/", " › ")
     student != null -> "Folders › Students › ${student.name}"
     presetName != null -> "Folders › Presets › $presetName"
     else -> "Folders › Students"
@@ -579,7 +579,7 @@ fun FolderOpenScreen(key: String, onBack: () -> Unit, onOpen: (String) -> Unit, 
             tmp.delete()
             ReadyFile(out, out.name, mime)
           }
-          app.saveTargets.phone.saveTo(context, ready, tree.path(f.id))
+          app.saveTargets.phone.saveTo(context, ready, tree.pathWhenRead(f.id))
         }
         if (outcome is SaveOutcome.Failed) Toast.makeText(context, outcome.message, Toast.LENGTH_LONG).show()
       } catch (e: Throwable) {
@@ -588,6 +588,16 @@ fun FolderOpenScreen(key: String, onBack: () -> Unit, onOpen: (String) -> Unit, 
         busy = null
       }
     }
+  }
+
+  // the tree still being read (app start): nothing shown from an empty tree
+  val loaded by tree.loaded.collectAsState()
+  if (!loaded) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
+      IconButton(onClick = onBack, modifier = Modifier.size(44.dp)) { Icon(AppIcons.Back, contentDescription = "Back") }
+      com.docready.aamunim.ui.components.BusyRow("Reading your folders…")
+    }
+    return
   }
 
   Scaffold(

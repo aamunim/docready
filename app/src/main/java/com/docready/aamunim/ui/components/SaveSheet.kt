@@ -103,7 +103,7 @@ fun SaveSheet(
   LaunchedEffect(Unit) {
     if (folderId == null) folderId = withContext(Dispatchers.IO) { tree.lastFolder(naming.preset) ?: tree.ensure(FolderLogic.SCANS) }
   }
-  val folderPath = remember(treeData, folderId) { tree.path(folderId).ifEmpty { FolderLogic.SCANS } }
+  val folderPath = remember(treeData, folderId) { tree.path(folderId)?.ifEmpty { null } ?: FolderLogic.SCANS }
 
   var toPhone by rememberSaveable { mutableStateOf(true) }
   var choosing by remember { mutableStateOf(false) }

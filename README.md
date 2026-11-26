@@ -164,7 +164,8 @@ app/src/main/java/com/docready/aamunim/
              SignatureTools, PdfTools (PdfRenderer, NID page), Scanner (ML Kit scanner),
              SizeFixer (size check, Fix to fit)
   data/      presets, local folders, students, drafts, settings (JSON); file naming (Naming.kt)
-  save/      SaveTarget (PHONE, SHARE; GOOGLE_DRIVE and ITTC = "Coming soon"), Zipper
+  save/      SaveTarget (PHONE, SHARE), PhoneSaveTarget, DownloadsFiles, Zipper
+  drive/     DriveAuth, DriveClient, DriveQueue (Google Drive, optional)
   intake/    "Share to DocReady"
   ui/        theme, components (save sheet, crop box, icons), screens, navigation
 ```
@@ -178,11 +179,28 @@ The image code is ported from the DocReady Expo module (lead repo,
   (`Identity.getAuthorizationClient(ctx).authorize(...)`), scope
   `https://www.googleapis.com/auth/drive.file` only: DocReady sees only the files it creates.
   A token is asked for per upload batch (Play services keeps it); a 401 clears it
-  (`clearToken`) and asks again silently. Disconnect clears the token and forgets the account.
+  (`GoogleAuthUtil.clearToken`) and asks again silently.
+- **Disconnect**: the account is forgotten first, the upload job (`drive-upload`) is
+  cancelled, and every waiting, uploading or failed file goes back to "not uploaded"
+  (unfinished resumable sessions dropped). The grant is revoked with Google's OAuth revoke
+  endpoint (`POST https://oauth2.googleapis.com/revoke`), and the token cleared from Play
+  services. (play-services-auth 21.3.0 has no `AuthorizationClient.revokeAccess`; that needs
+  21.4.0+, which could not be checked here.) Offline, revoking fails quietly: the user can
+  remove DocReady in their Google Account → Security → Third-party connections. While not
+  connected nothing is queued (Auto upload included) and the job does nothing.
 - **Uploads**: Drive REST v3 over HttpURLConnection; one request up to 5 MB, a resumable upload
   above. Files go to My Drive / DocReady / <folder path> (students: DocReady / Students /
   <name>); Drive folder ids are cached per local folder and made again when deleted on Drive.
-  A file uploaded before gets a new revision of the same Drive file.
+  A file uploaded before gets a new revision of the same Drive file. Each file DocReady creates
+  carries `appProperties {"docready_id": <record id>}`; before creating, DocReady looks for that
+  mark (`appProperties has { key='docready_id' and value='…' } and trashed = false`), so a retry
+  after a lost answer reuses the file instead of making a second one. A resumable upload's
+  session address is kept per file: a retry asks Drive where it stopped (`Content-Range:
+  bytes */<total>`) and goes on from the returned `Range`. The size sent is read from the file
+  at upload time, not the size recorded at saving.
+- **Errors**: a file gone from the phone (`FileNotFoundException`, `SecurityException`) is
+  failed for good with "Not on the phone any more". Only socket/timeout errors and Drive's
+  busy answers (408, 429, 5xx) are retried; other refusals are failed (Retry all queues them).
 - **Where**: the save sheet's "Also upload to Drive" (remembered per preset); a folder's menu
   "Upload to Drive" and "Auto upload new files"; select mode's cloud button. Each file shows
   uploaded (cloud), waiting (spinner) or failed (amber); Settings shows "N waiting · Retry all".
@@ -201,6 +219,41 @@ The image code is ported from the DocReady Expo module (lead repo,
 - **Play Data safety**: "Files and docs: files you choose are sent to your Google Drive" —
   collected: no (sent only to the user's own Drive, on their action), shared: no, encrypted
   in transit: yes, optional.
+
+## ML Kit and network access (Data safety)
+
+The INTERNET permission is back (for Drive), so the ML Kit libraries can also reach the
+network. The app uses ML Kit through Google Play services (document scanner, face detection,
+subject segmentation, text recognition, code scanner). Google documents that ML Kit APIs send
+usage and diagnostic logs to Google (device and app information such as model, OS version,
+package and app version; API usage, performance and error metrics). They do not send the
+pictures or the recognised text. These are typically sent by the Firebase data transport
+library (`com.google.android.datatransport`: `TransportBackendDiscovery`,
+`JobInfoSchedulerService`, `AlarmManagerSchedulerBroadcastReceiver`), which the ML Kit
+dependencies merge into the manifest.
+
+**What this version does**: nothing is removed. The merged manifest could not be built here
+(Google Maven is not reachable from the build sandbox), so removing those components with
+`tools:node="remove"` could not be checked against ML Kit. Removing the scheduler service or
+receiver while the runtime still schedules uploads can crash the app (JobScheduler refuses a
+service that is not in the manifest).
+
+**For Play Data safety**: declare **App info and performance → Diagnostics** (and
+crash logs if Google's ML Kit disclosure lists them for the APIs used) as **collected**, for
+**analytics**, processed by Google as a service provider, not shared. Check this against
+Google's current "ML Kit data disclosure" page before submitting.
+
+**To opt out later (check on a device first)**: in `app/src/main/AndroidManifest.xml`, add
+
+```xml
+<service android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
+    tools:node="remove" />
+```
+
+Removing only the backend discovery service should make the runtime find no backend and drop
+the logs without scheduling anything. Then run the app's OCR, face, cut-out and QR scanner and
+check logcat for crashes before shipping. The Play services modules themselves run in Google
+Play services, which has its own network access either way.
 
 ## Later (not in this version)
 

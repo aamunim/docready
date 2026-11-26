@@ -16,7 +16,9 @@ import com.docready.aamunim.drive.DriveAuth
 import com.docready.aamunim.drive.DriveQueue
 import com.docready.aamunim.ui.components.AppCard
 import com.docready.aamunim.ui.theme.DocReadyColors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.docready.aamunim.ui.components.ScreenTitle
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -139,7 +141,7 @@ private fun DriveCard() {
       try {
         DriveAuth.fromIntent(context, res.data)
         Toast.makeText(context, "Google Drive connected", Toast.LENGTH_SHORT).show()
-        if (waiting > 0 || failed > 0) DriveQueue.retryAll(context)
+        if (waiting > 0 || failed > 0) scope.launch { withContext(Dispatchers.IO) { DriveQueue.retryAll(context) } }
       } catch (e: Exception) {
         Toast.makeText(context, e.message ?: "Google Drive was not connected.", Toast.LENGTH_LONG).show()
       }
@@ -175,7 +177,7 @@ private fun DriveCard() {
             color = if (failed > 0) DocReadyColors.extra.onWarningContainer else MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
           )
-          TextButton(onClick = { DriveQueue.retryAll(context) }) { Text("Retry all") }
+          TextButton(onClick = { scope.launch { withContext(Dispatchers.IO) { DriveQueue.retryAll(context) } } }) { Text("Retry all") }
         }
       }
       if (account.connected) {
@@ -183,7 +185,7 @@ private fun DriveCard() {
           onClick = {
             busy = true
             scope.launch {
-              DriveAuth.disconnect(context)
+              DriveQueue.disconnect(context)
               busy = false
             }
           },

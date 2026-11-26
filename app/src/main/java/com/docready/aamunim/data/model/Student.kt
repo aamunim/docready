@@ -22,6 +22,9 @@ data class StudentFile(
   val driveFileId: String? = null,
   val drive: com.docready.aamunim.data.DriveState = com.docready.aamunim.data.DriveState.NONE,
   val driveError: String? = null,
+  /** An unfinished resumable upload: its session address, and the size it was started for */
+  val driveSession: String? = null,
+  val driveSessionSize: Long? = null,
 )
 
 /** A student (an applicant): the papers one form asks of them, made and kept together */

@@ -5,14 +5,16 @@ import android.content.Context
 import android.content.Intent
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
-import com.google.android.gms.auth.api.identity.ClearTokenRequest
+import com.google.android.gms.auth.GoogleAuthUtil
 import com.google.android.gms.auth.api.identity.Identity
 import com.google.android.gms.common.api.Scope
 import com.google.android.gms.tasks.Task
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -24,7 +26,7 @@ data class DriveAccount(val connected: Boolean, val email: String? = null)
  * client, scope drive.file only (DocReady sees only the files it puts there). No client secret,
  * no server: the Android OAuth client is matched by the app's package and signing certificate.
  * A token is asked for each time it is needed (Play services keeps it); a 401 clears it and asks
- * again, silently.
+ * again, silently. Disconnect revokes the grant (OAuth revoke endpoint).
  */
 object DriveAuth {
   const val SCOPE = "https://www.googleapis.com/auth/drive.file"
@@ -77,18 +79,49 @@ object DriveAuth {
     null
   }
 
-  /** A token Drive refused (401): forgotten, so the next ask gets a fresh one */
+  /**
+   * A token Drive refused (401): forgotten by Play services (GoogleAuthUtil.clearToken, which
+   * play-services-auth has had for years), so the next ask gets a fresh one. Off the main thread.
+   */
   suspend fun clear(context: Context, token: String) {
-    try {
-      Identity.getAuthorizationClient(context).clearToken(ClearTokenRequest.builder().setToken(token).build()).await()
-    } catch (_: Exception) {
+    withContext(Dispatchers.IO) {
+      try {
+        GoogleAuthUtil.clearToken(context, token)
+      } catch (_: Exception) {
+      }
     }
   }
 
-  /** Disconnect: the token cleared and the account forgotten by the app */
+  /**
+   * Disconnect: the grant revoked with Google's OAuth revoke endpoint (the user's consent to
+   * DocReady ends; the next Connect asks again), the token cleared from Play services, and the
+   * account forgotten by the app. Revoking needs a network: offline, the token is still cleared
+   * and the account forgotten, and the user can remove DocReady in their Google Account
+   * (Security, Third-party connections).
+   */
   suspend fun disconnect(context: Context) {
-    tokenOrNull(context)?.let { clear(context, it) }
+    val token = tokenOrNull(context)
+    // (forgotten first: a running upload stops at its next file)
     remember(context, false, null)
+    if (token != null) {
+      withContext(Dispatchers.IO) { revoke(token) }
+      clear(context, token)
+    }
+  }
+
+  private fun revoke(token: String) {
+    try {
+      val c = java.net.URL("https://oauth2.googleapis.com/revoke").openConnection() as java.net.HttpURLConnection
+      c.requestMethod = "POST"
+      c.connectTimeout = 15_000
+      c.readTimeout = 15_000
+      c.doOutput = true
+      c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+      c.outputStream.use { it.write(("token=" + java.net.URLEncoder.encode(token, "UTF-8")).toByteArray()) }
+      c.responseCode
+      c.disconnect()
+    } catch (_: Exception) {
+    }
   }
 
   private fun remember(context: Context, connected: Boolean, email: String?) {
