@@ -61,6 +61,17 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.docready.aamunim.data.FileNames
 import com.docready.aamunim.data.PresetCodec
+import com.docready.aamunim.ui.components.AppCard
+import com.docready.aamunim.ui.components.CircleIconButton
+import com.docready.aamunim.ui.components.ScreenTitle
+import com.docready.aamunim.ui.components.dashedBorder
+import com.docready.aamunim.ui.theme.DocReadyColors
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 import com.docready.aamunim.data.model.PageLimits
 import com.docready.aamunim.data.model.withPageNumbers
 import com.docready.aamunim.data.PresetRepository
@@ -152,13 +163,31 @@ fun PresetsScreen(onBack: (() -> Unit)?, onOpen: (String) -> Unit, onNew: () -> 
   var query by rememberSaveable { mutableStateOf("") }
   val import = rememberPresetImport { onOpen(it.id) }
   val shown = presets.filter { query.isBlank() || it.name.contains(query.trim(), ignoreCase = true) }
+  val students by LocalContext.current.docReady.students.students.collectAsState()
+  var qrFor by remember { mutableStateOf<Preset?>(null) }
+  var menu by remember { mutableStateOf(false) }
   Scaffold(
     topBar = {
-      DocTopBar("Presets", onBack, actions = {
-        TextButton(onClick = onScanQr) { Text("Scan QR") }
-        TextButton(onClick = import) { Text("Import") }
-        if (presets.isNotEmpty()) TextButton(onClick = onNew) { Text("+ New") }
-      })
+      if (onBack != null) {
+        DocTopBar("Presets", onBack)
+      } else {
+        ScreenTitle("Presets") {
+          OutlinedButton(onClick = onScanQr, modifier = Modifier.height(44.dp), contentPadding = PaddingValues(horizontal = 14.dp)) {
+            Icon(AppIcons.Qr, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text("Scan QR")
+          }
+          Box {
+            CircleIconButton(AppIcons.More, "More: import a preset file", { menu = true })
+            androidx.compose.material3.DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+              androidx.compose.material3.DropdownMenuItem(text = { Text("Import a preset file") }, onClick = {
+                menu = false
+                import()
+              })
+            }
+          }
+        }
+      }
     },
   ) { padding ->
     if (presets.isEmpty()) {
@@ -195,42 +224,80 @@ fun PresetsScreen(onBack: (() -> Unit)?, onOpen: (String) -> Unit, onNew: () -> 
     }
     LazyColumn(
       Modifier.padding(padding).fillMaxSize(),
-      contentPadding = PaddingValues(16.dp),
+      contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 20.dp),
       verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-      item {
-        OutlinedTextField(
-          value = query,
-          onValueChange = { query = it },
-          leadingIcon = { Icon(AppIcons.Search, contentDescription = null) },
-          placeholder = { Text("Search presets") },
-          singleLine = true,
-          modifier = Modifier.fillMaxWidth(),
-        )
+      if (presets.size > 4) {
+        item {
+          OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            leadingIcon = { Icon(AppIcons.Search, contentDescription = null) },
+            placeholder = { Text("Search presets") },
+            singleLine = true,
+            shape = RoundedCornerShape(24.dp),
+            modifier = Modifier.fillMaxWidth(),
+          )
+        }
       }
-      items(shown, key = { it.id }) { p -> PresetCard(p) { onOpen(p.id) } }
+      itemsIndexed(shown, key = { _, p -> p.id }) { i, p ->
+        PresetCard(p, i, students.count { it.presetId == p.id }, onQr = { qrFor = p }) { onOpen(p.id) }
+      }
       if (shown.isEmpty()) item { Text("No preset matches.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+      item {
+        val green = MaterialTheme.colorScheme.primary
+        Surface(
+          onClick = onNew,
+          shape = RoundedCornerShape(18.dp),
+          color = androidx.compose.ui.graphics.Color.Transparent,
+          modifier = Modifier.fillMaxWidth().height(50.dp).dashedBorder(DocReadyColors.extra.successDash, 18.dp, 1.5.dp),
+        ) {
+          Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            Icon(AppIcons.Add, contentDescription = null, tint = green, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("New preset", color = green, fontWeight = FontWeight.Bold)
+          }
+        }
+      }
       item { Text(OFFICIAL_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
   }
+  qrFor?.let { PresetQrSheet(it, onDismiss = { qrFor = null }) }
 }
 
+/** A preset: its icon, name, items and use, a QR button, and its items as chips */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun PresetCard(p: Preset, onClick: () -> Unit) {
-  Surface(
-    onClick = onClick,
-    shape = RoundedCornerShape(14.dp),
-    color = MaterialTheme.colorScheme.surface,
-    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-    modifier = Modifier.fillMaxWidth(),
-  ) {
-    Column(Modifier.padding(14.dp)) {
+private fun PresetCard(p: Preset, index: Int, used: Int, onQr: () -> Unit, onClick: () -> Unit) {
+  val extra = DocReadyColors.extra
+  val green = index % 2 == 0
+  AppCard(Modifier.fillMaxWidth(), onClick = onClick) {
+    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
       Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(p.name, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-        Badge("${p.items.size} item${if (p.items.size == 1) "" else "s"}")
+        Box(
+          Modifier.size(42.dp).background(if (green) MaterialTheme.colorScheme.primaryContainer else extra.warningContainer, RoundedCornerShape(13.dp)),
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(AppIcons.PresetList, contentDescription = null, tint = if (green) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(22.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+          Text(p.name, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+          val meta = "${p.items.size} item${if (p.items.size == 1) "" else "s"}" + if (used > 0) " · used by $used student${if (used == 1) "" else "s"}" else ""
+          Text(meta, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        CircleIconButton(AppIcons.Qr, "Show QR for ${p.name}", onQr, filled = true)
       }
-      for (item in p.items) {
-        Text(item.summary(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+      androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        for (item in p.items) {
+          Box(
+            Modifier.height(26.dp).background(MaterialTheme.colorScheme.background, RoundedCornerShape(13.dp))
+              .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(13.dp)).padding(horizontal = 9.dp),
+            contentAlignment = Alignment.Center,
+          ) {
+            Text(item.title, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, color = extra.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
+          }
+        }
       }
     }
   }
