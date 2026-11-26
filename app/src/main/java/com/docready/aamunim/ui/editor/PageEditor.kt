@@ -144,8 +144,8 @@ class PageEditorState(
   }
 
   // ---- fingers holding the paper (the Beautify tab's "Fingers" switch and its outline)
-  /** Fingers found on this page as it is framed (parts of it); empty = none */
-  var fingerBoxes by mutableStateOf<List<FBox>>(emptyList())
+  /** Fingers on this page (parts of the framed page, before the crop box): stored, or found now */
+  var fingerBoxes by mutableStateOf<List<CropRect>>(emptyList())
     private set
   private var fingerJob: Job? = null
 
@@ -154,10 +154,15 @@ class PageEditorState(
     val src = sourceBmp ?: return
     val r = recipes[i]
     fingerJob?.cancel()
+    // the page's own (approved or offered) fingers: shown as they are
+    if (r.fingerBoxes.isNotEmpty()) {
+      fingerBoxes = r.fingerBoxes
+      return
+    }
     fingerJob = scope.launch {
       val found = withContext(Dispatchers.Default) {
         try {
-          PageRenderer.findFingers(src.copy(Bitmap.Config.ARGB_8888, true), r)
+          PageRenderer.findFingers(src.copy(Bitmap.Config.ARGB_8888, true), r).boxes
         } catch (e: CancellationException) {
           throw e
         } catch (_: Throwable) {
@@ -168,7 +173,11 @@ class PageEditorState(
     }
   }
 
-  fun setFingers(on: Boolean) = update(recipe.copy(fingers = on))
+  /** The switch: these fingers painted over (their boxes kept in the recipe), or left */
+  fun setFingers(on: Boolean) {
+    val boxes = recipe.fingerBoxes.ifEmpty { fingerBoxes }
+    update(recipe.copy(fingers = on && boxes.isNotEmpty(), fingerBoxes = boxes))
+  }
 
   // ---- ✨ Beautify
   /** The page without Beautify's clean-up (same framing), for compare and the loupe */
@@ -344,6 +353,11 @@ class PageEditorState(
       r = r.copy(erase = emptyList())
       note = (note?.let { "$it " } ?: "") + "Erasing was removed because the page moved under it (Undo brings it back)."
     }
+    // fingers are boxes on the framed page: a new framing means looking for them again
+    if ((userMoved || beautyMoved) && old.fingerBoxes.isNotEmpty()) {
+      r = r.copy(fingers = false, fingerBoxes = emptyList())
+      note = (note?.let { "$it " } ?: "") + "Fingers: look again in ✨ Beautify, the page moved."
+    }
     // the crop box is drawn on the framed page: a new Beautify framing would shift it
     if (beautyMoved && r.crop != null) {
       r = r.copy(crop = null)
@@ -357,6 +371,7 @@ class PageEditorState(
     if (key == null || key != lastKey) notice = null // (an older note is about an older step)
     val (r, note) = ruled(old, new)
     if (note != null) notice = note
+    if (old.fingerBoxes.isNotEmpty() && r.fingerBoxes.isEmpty()) fingerBoxes = emptyList()
     if (r == old) return
     if (key == null || key != lastKey) {
       undo.getOrPut(index) { ArrayList() }.add(old)

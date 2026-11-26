@@ -62,6 +62,13 @@ data class PageRecipe(
    * it is framed, at any size). On by default only where fingers were found on a scanned page.
    */
   val fingers: Boolean = false,
+  /**
+   * The fingers found and approved, as parts of the framed page before the crop box (after the
+   * corners, turns and Beautify's framing): only these are painted over, at any size. Empty in
+   * recipes from before (their fingers are found again, photos and stamps left out).
+   * Not empty with [fingers] off: found but not turned on (offered: "Fingers found — remove?").
+   */
+  val fingerBoxes: List<CropRect> = emptyList(),
 ) {
   val isPlain: Boolean get() = this == Plain
 

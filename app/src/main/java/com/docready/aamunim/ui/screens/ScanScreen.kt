@@ -211,7 +211,7 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
             // new document pages: Magic (and the paper's corners on a photo)
             val framed = PageRecipe.Document.copy(quad = quad?.toList())
             // fingers holding the paper: painted out by default where found (never over a face)
-            val recipe = if (fingersOn(f, framed)) framed.copy(fingers = true) else framed
+            val recipe = PageRenderer.withFingers(framed, fingersOn(f, framed))
             // the real result, small: the animation's reveal and the page's tile
             val shown = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), PREVIEW), recipe)
             val tile = DocTools.scaleToMax(shown.copy(Bitmap.Config.ARGB_8888, false), 240).asImageBitmap()
@@ -233,10 +233,25 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
   }
 
   /** Fingers found on the page as it will be framed (a failure finds none) */
-  private fun fingersOn(f: File, r: PageRecipe): Boolean = try {
-    PageRenderer.findFingers(DocTools.load(ctx, Uri.fromFile(f), 1600), r).isNotEmpty()
+  private fun fingersOn(f: File, r: PageRecipe): PageRenderer.FingerFind? = try {
+    PageRenderer.findFingers(DocTools.load(ctx, Uri.fromFile(f), 1600), r)
   } catch (_: Throwable) {
-    false
+    null
+  }
+
+  /** "Fingers found — remove?" answered on the page's tile: painted over (or left) */
+  fun setFingers(page: Page, on: Boolean) {
+    val r = page.recipe.copy(fingers = on)
+    result = null
+    viewModelScope.launch {
+      try {
+        val thumb = withContext(Dispatchers.Default) { pageThumb(page.file, r) }
+        val at = pages.indexOf(page)
+        if (at >= 0) pages[at] = Page(page.file, thumb, r, page.warning, page.checkCorners)
+      } catch (e: Throwable) {
+        error = messageOf(e, "The page could not be updated.")
+      }
+    }
   }
 
   /** "Looks blurry" / "Too dark" for a page's picture (the same check as for photos), or null */
@@ -634,6 +649,10 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
               sameAs.getOrNull(i)?.let { DuplicateBadge(it) }
               p.warning?.let { PageNote(it) }
               p.recipe.beautyBadge()?.let { BeautyBadge(it) }
+              if (!p.recipe.fingers && p.recipe.fingerBoxes.isNotEmpty()) {
+                PageNote("Fingers found — remove?")
+                TextButton(onClick = { vm.setFingers(p, true) }, enabled = vm.busy == null) { Text("Remove", style = MaterialTheme.typography.labelSmall) }
+              }
               if (p.checkCorners) PageNote("Check the corners")
               OutlinedButton(onClick = { vm.remove(p) }, enabled = vm.busy == null, modifier = Modifier.height(32.dp)) {
                 Text("Remove", style = MaterialTheme.typography.labelSmall)

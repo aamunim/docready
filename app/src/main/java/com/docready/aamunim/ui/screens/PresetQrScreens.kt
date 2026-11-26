@@ -72,6 +72,8 @@ import com.docready.aamunim.ui.components.VSpace
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.google.android.gms.common.moduleinstall.ModuleInstall
+import com.google.android.gms.common.moduleinstall.ModuleInstallRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -309,6 +311,15 @@ fun PresetQrImportScreen(onBack: () -> Unit, onImported: (String) -> Unit) {
   val vm: PresetQrImportViewModel = viewModel { PresetQrImportViewModel(appContext) }
   var clash by remember { mutableStateOf<Preset?>(null) }
 
+  fun askForScanner(options: GmsBarcodeScannerOptions) {
+    try {
+      ModuleInstall.getClient(context).installModules(
+        ModuleInstallRequest.newBuilder().addApi(GmsBarcodeScanning.getClient(context, options)).build(),
+      )
+    } catch (_: Exception) {
+    }
+  }
+
   fun scanWithCamera() {
     val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
     try {
@@ -318,8 +329,11 @@ fun PresetQrImportScreen(onBack: () -> Unit, onImported: (String) -> Unit) {
           // more parts to go: the scanner opens again for the next one (Back stops it)
           if (!vm.complete && vm.total > 1 && vm.error == null) scanWithCamera()
         }
-        .addOnFailureListener { e ->
-          vm.error = "The code scanner is not available (${e.message ?: "Google Play services"}). Use “From a picture”."
+        .addOnFailureListener { _ ->
+          // (mostly its module not downloaded yet on a fresh install: asked for now, by Play
+          // services itself; the app has no network permission)
+          askForScanner(options)
+          vm.error = "The scanner is getting ready (Google Play is downloading it). Try again in a minute, or use “From a picture”."
         }
     } catch (e: Exception) {
       vm.error = "The code scanner is not available on this phone. Use “From a picture”."
@@ -407,7 +421,14 @@ fun PresetQrImportScreen(onBack: () -> Unit, onImported: (String) -> Unit) {
     AlertDialog(
       onDismissRequest = { clash = null },
       title = { Text("“${existing.name}” is already here") },
-      text = { Text("Replace your preset with this one, or keep both (this one gets a new name)? Replacing changes the items a student's checklist follows.") },
+      text = {
+        // (items are matched by kind and name, then by place: students' ticks stay with them)
+        val lost = remember(existing.id, p) { app.presets.replacePlan(existing.id, p).unmatched }
+        Text(
+          "Replace your preset with this one, or keep both (this one gets a new name)?" +
+            if (lost > 0) " $lost of your preset's items have no match in this one: students' ticks for them will be lost." else "",
+        )
+      },
       confirmButton = {
         TextButton(onClick = {
           clash = null

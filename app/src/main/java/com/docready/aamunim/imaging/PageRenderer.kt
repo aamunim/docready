@@ -58,30 +58,73 @@ object PageRenderer {
   /** After the geometry: the crop box, fingers out, shadows / look / light, then erasing */
   fun finish(geo: Bitmap, r: PageRecipe): Bitmap = erase(look(fingers(cropped(geo, r.crop), r), r), r)
 
-  /** Fingers painted out (found on a ≤ 1000 px copy of the framed page, the mask scaled to it) */
-  private fun fingers(b: Bitmap, r: PageRecipe): Bitmap = if (r.fingers) Beautifier.removeFingers(b) else b
+  /**
+   * The approved fingers painted out (their stored boxes only, scaled to this page: the preview
+   * and the full page get the same); a recipe from before the boxes were stored finds them again
+   */
+  private fun fingers(b: Bitmap, r: PageRecipe): Bitmap {
+    if (!r.fingers) return b
+    if (r.fingerBoxes.isEmpty()) return Beautifier.removeFingers(b)
+    val boxes = r.fingerBoxes.mapNotNull { inCrop(it, r.crop) }
+    return if (boxes.isEmpty()) b else Beautifier.removeFingersIn(b, boxes)
+  }
+
+  /** A box on the framed page as parts of the page inside the crop box (null: outside it) */
+  fun inCrop(c: CropRect, crop: CropRect?): FBox? {
+    val k = crop ?: CropRect(0f, 0f, 1f, 1f)
+    val w = max(0.0001f, k.width)
+    val h = max(0.0001f, k.height)
+    val l = ((c.left - k.left) / w).coerceIn(0f, 1f)
+    val t = ((c.top - k.top) / h).coerceIn(0f, 1f)
+    val rr = ((c.right - k.left) / w).coerceIn(0f, 1f)
+    val bb = ((c.bottom - k.top) / h).coerceIn(0f, 1f)
+    return if (rr - l < 0.002f || bb - t < 0.002f) null else FBox(l, t, rr, bb)
+  }
+
+  /** Fingers found: their boxes (framed page, before the crop box), and whether faces were checked */
+  class FingerFind(val boxes: List<CropRect>, val facesChecked: Boolean)
 
   /**
-   * The fingers on a page as it will be framed (corners, turns, crop), as parts of it: empty when
-   * there are none, or when one touches a face (a portrait photo is skin too: never painted
-   * over). Uses up [src]. Blocking (the face finder is awaited).
+   * The fingers on a page as it is framed (corners, turns, Beautify's framing): any over a photo,
+   * logo or stamp left out, and any touching a face dropped (a portrait photo is skin too; faces
+   * from 2 % of the page). Those checks run only when skin was found. Uses up [src].
+   * Blocking (the face finder is awaited).
    */
-  fun findFingers(src: Bitmap, r: PageRecipe): List<FBox> {
-    val page = cropped(geometry(src, r.copy(fingers = false), maxSide = Fingers.SIDE), r.crop)
+  fun findFingers(src: Bitmap, r: PageRecipe): FingerFind {
+    val page = geometry(src, r.copy(fingers = false), maxSide = Fingers.SIDE)
     try {
-      val found = Fingers.find(Beautifier.toPx(page))?.boxes ?: return emptyList()
-      val faces = try {
-        DocPhoto.faces(page).map { f ->
-          FBox(f.box.left / page.width, f.box.top / page.height, f.box.right / page.width, f.box.bottom / page.height)
-        }
+      val pw = page.width.toFloat()
+      val ph = page.height.toFloat()
+      // the quick skin check first: most pages stop here (no photo / stamp search, no face scan)
+      val skin = Fingers.find(Beautifier.toPx(page))?.boxes ?: return FingerFind(emptyList(), true)
+      val avoid = Beautifier.protectBoxes(page).map { FBox(it.left / pw, it.top / ph, it.right / pw, it.bottom / ph) }
+      fun overlaps(b: FBox, f: FBox) = b.left < f.right && f.left < b.right && b.top < f.bottom && f.top < b.bottom
+      val found = skin.filter { b -> avoid.none { overlaps(b, it) } }
+      if (found.isEmpty()) return FingerFind(emptyList(), true)
+      val faces: List<FBox>? = try {
+        DocPhoto.faces(page, minFaceSize = 0.02f).map { f -> FBox(f.box.left / pw, f.box.top / ph, f.box.right / pw, f.box.bottom / ph) }
       } catch (_: Exception) {
-        emptyList()
+        null // (the face finder not ready: the fingers are only offered)
       }
-      val touchesFace = found.any { b -> faces.any { f -> b.left < f.right && f.left < b.right && b.top < f.bottom && f.top < b.bottom } }
-      return if (touchesFace) emptyList() else found
+      val kept = if (faces == null) {
+        found
+      } else {
+        found.filter { b -> faces.none { overlaps(b, it) } }
+      }
+      return FingerFind(kept.map { CropRect(it.left, it.top, it.right, it.bottom) }, faces != null)
     } finally {
       page.recycle()
     }
+  }
+
+  /**
+   * A new page's recipe with its fingers: painted over by default when faces were checked;
+   * only offered (boxes kept, switched off) when the face finder could not run
+   */
+  fun withFingers(r: PageRecipe, f: FingerFind?): PageRecipe = when {
+    f == null || f.boxes.isEmpty() -> r
+    f.facesChecked -> r.copy(fingers = true, fingerBoxes = f.boxes)
+    else -> r.copy(fingers = false, fingerBoxes = f.boxes)
   }
 
   /** A few degrees of rotation around the middle, the same size, white in the corners */

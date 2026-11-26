@@ -236,7 +236,7 @@ private fun shownBox(c: CropRect, b: BeautifyRecipe, crop: CropRect?, aspect: Fl
  */
 internal fun beautyOverlay(state: PageEditorState): (DrawScope.(Rect) -> Unit)? {
   val r = state.recipe
-  val fingers = state.fingerBoxes
+  val fingers = state.fingerBoxes.mapNotNull { com.docready.aamunim.imaging.PageRenderer.inCrop(it, r.crop) }
   val b: BeautifyRecipe = r.beautify ?: return fingerOverlay(fingers, r.fingers)
   val folds = b.foldLines.isNotEmpty() && (b.folds <= 0f || state.showFolds)
   val trim = b.trim == null && b.foundTrim != null

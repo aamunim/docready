@@ -299,6 +299,22 @@ class PdfToolsViewModel(
     }
   }
 
+  /** "Fingers found — remove?" answered on the page: painted over */
+  fun setFingers(p: PdfPage, on: Boolean) {
+    val r = (recipes[p] ?: return).copy(fingers = on)
+    recipes[p] = r
+    userEdited = true
+    result = null
+    split.onRecipesChanged(listOf(p))
+    viewModelScope.launch {
+      try {
+        thumbs[p] = withContext(Dispatchers.Default) { listThumb(p.rendered(ctx, r, 400)) }
+      } catch (e: Throwable) {
+        error = messageOf(e, "The page could not be updated.")
+      }
+    }
+  }
+
   /** Several pages came in by Share / Open with: offer to split them by preset */
   var suggestSplit by mutableStateOf(false)
 
@@ -356,11 +372,11 @@ class PdfToolsViewModel(
               // fingers holding the paper: painted out by default where found (never over a face)
               val start = withContext(Dispatchers.Default) {
                 val found = try {
-                  PageRenderer.findFingers(DocTools.load(ctx, Uri.fromFile(f), 1600), PageRecipe.Document).isNotEmpty()
+                  PageRenderer.findFingers(DocTools.load(ctx, Uri.fromFile(f), 1600), PageRecipe.Document)
                 } catch (_: Throwable) {
-                  false
+                  null
                 }
-                if (found) PageRecipe.Document.copy(fingers = true) else PageRecipe.Document
+                PageRenderer.withFingers(PageRecipe.Document, found)
               }
               val (shown, cleaned) = withContext(Dispatchers.Default) {
                 val c = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), 900), start)
@@ -961,6 +977,9 @@ private fun PagesTool(vm: PdfToolsViewModel, addFiles: () -> Unit) {
             Text(p.from, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             vm.recipes[p]?.beautyBadge()?.let { BeautyBadge(it) }
             sameAs.getOrNull(i)?.let { DuplicateBadge(it) }
+            vm.recipes[p]?.takeIf { !it.fingers && it.fingerBoxes.isNotEmpty() }?.let {
+              TextButton(onClick = { vm.setFingers(p, true) }, enabled = vm.busy == null) { Text("Fingers found — remove?") }
+            }
           }
           // (pages being added rely on the list's positions: no change meanwhile)
           IconButton(onClick = { vm.move(i, -1) }, enabled = vm.busy == null && i > 0) { Icon(AppIcons.Up, contentDescription = "Move up") }

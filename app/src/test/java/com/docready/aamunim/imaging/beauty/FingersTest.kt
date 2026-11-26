@@ -106,6 +106,25 @@ class FingersTest {
   }
 
   @Test
+  fun onlyTheStoredBoxesArePaintedAtAnySize() {
+    val d = page(fingers = true)
+    val before = d.copyOf()
+    val boxes = Fingers.find(Px(w, h, d))!!.boxes
+    // the full page
+    Fingers.removeIn(Px(w, h, d), boxes)
+    val lums = ArrayList<Int>()
+    for (y in 0 until h) for (x in 0 until w) if (inFinger(x, y, left) || inFinger(x, y, bottom)) lums.add(Px.lum(d[y * w + x]))
+    assertTrue("fill mean ${lums.average()}", lums.average() >= 228)
+    assertTrue("fill min ${lums.min()}", lums.min() >= 220)
+    for (y in photo.top until photo.bottom) for (x in photo.left until photo.right) assertEquals(before[y * w + x], d[y * w + x])
+    // only the left finger's box: the bottom finger stays
+    val one = page(fingers = true)
+    Fingers.removeIn(Px(w, h, one), boxes.filter { it.left == 0f })
+    assertTrue(Px.lum(one[1700 * w + 630]) < 200)
+    assertTrue(Px.lum(one[706 * w + 40]) >= 220)
+  }
+
+  @Test
   fun aPageWithoutFingersIsLeftAlone() {
     val d = page(fingers = false)
     val before = d.copyOf()

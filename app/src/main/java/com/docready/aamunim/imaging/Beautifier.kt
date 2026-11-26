@@ -64,8 +64,17 @@ object Beautifier {
 
   fun magicBw(src: Bitmap): Bitmap = onPx(src) { MagicLooks.magicBw(it) }
 
-  /** Fingers holding the paper painted out with the paper's own colour ([Fingers]) */
-  fun removeFingers(src: Bitmap): Bitmap = onPx(src) { Fingers.remove(it) }
+  /**
+   * Fingers holding the paper found again and painted out (recipes from before the boxes were
+   * stored): photos, logos and stamps never touched
+   */
+  fun removeFingers(src: Bitmap): Bitmap {
+    val avoid = protectBoxes(src).map { FBox(it.left.toFloat() / src.width, it.top.toFloat() / src.height, it.right.toFloat() / src.width, it.bottom.toFloat() / src.height) }
+    return onPx(src) { Fingers.remove(it, avoid) }
+  }
+
+  /** The approved fingers ([boxes], parts of [src]) painted out with the paper's own colour */
+  fun removeFingersIn(src: Bitmap, boxes: List<FBox>): Bitmap = onPx(src) { Fingers.removeIn(it, boxes) }
 
   fun lighten(src: Bitmap): Bitmap = onPx(src) { MagicLooks.lighten(it) }
 

@@ -41,20 +41,7 @@ object Fingers {
     val skin = BooleanArray(n)
     for (y in 0 until h) for (x in 0 until w) {
       if (x >= bandX && x < w - bandX && y >= bandY && y < h - bandY) continue
-      val c = s.data[y * w + x]
-      val r = Px.r(c)
-      val g = Px.g(c)
-      val b = Px.b(c)
-      val yy = 0.299f * r + 0.587f * g + 0.114f * b
-      val cb = 128 - 0.168736f * r - 0.331264f * g + 0.5f * b
-      val cr = 128 + 0.5f * r - 0.418688f * g - 0.081312f * b
-      if (yy < 45f || cr !in 136f..180f || cb !in 75f..128f) continue
-      // clearly not the paper: darker than it, or much more colourful (aged paper is skin-ish)
-      paper.at(x.toFloat(), y.toFloat(), c3)
-      val pl = 0.299f * c3[0] + 0.587f * c3[1] + 0.114f * c3[2]
-      val pcr = 128 + 0.5f * c3[0] - 0.418688f * c3[1] - 0.081312f * c3[2]
-      if (pl - yy < 25f && cr - pcr < 12f) continue
-      skin[y * w + x] = true
+      skin[y * w + x] = isSkin(s.data[y * w + x], paper, x, y, c3, strict = true)
     }
     val labels = IntArray(n)
     val minArea = max(30, n / 700)
@@ -104,13 +91,77 @@ object Fingers {
     if (kept.isEmpty()) return null
     val mask = BooleanArray(n)
     for (m in kept) for (i in m) mask[i] = true
-    // grown for the shadow beside the finger and the nail's edge, then feathered
+    // grown for the shadow beside the finger and the nail's edge, then feathered; the paper
+    // under the fingers measured from the paper around them (the grown mask left out)
+    return finish(s, mask, boxes)
+  }
+
+  /**
+   * Skin, clearly not the paper: skin colours (YCbCr), and darker than the paper there or much
+   * more colourful (aged paper is skin-ish). [strict] for finding; a little looser where a
+   * finger was already found and approved (its shape inside its box).
+   */
+  private fun isSkin(c: Int, paper: Grid, x: Int, y: Int, c3: FloatArray, strict: Boolean): Boolean {
+    val r = Px.r(c)
+    val g = Px.g(c)
+    val b = Px.b(c)
+    val yy = 0.299f * r + 0.587f * g + 0.114f * b
+    val cb = 128 - 0.168736f * r - 0.331264f * g + 0.5f * b
+    val cr = 128 + 0.5f * r - 0.418688f * g - 0.081312f * b
+    if (strict) {
+      if (yy < 45f || cr !in 136f..180f || cb !in 75f..128f) return false
+    } else {
+      if (yy < 30f || cr !in 132f..185f || cb !in 70f..132f) return false
+    }
+    paper.at(x.toFloat(), y.toFloat(), c3)
+    val pl = 0.299f * c3[0] + 0.587f * c3[1] + 0.114f * c3[2]
+    val pcr = 128 + 0.5f * c3[0] - 0.418688f * c3[1] - 0.081312f * c3[2]
+    return if (strict) pl - yy >= 25f || cr - pcr >= 12f else pl - yy >= 15f || cr - pcr >= 8f
+  }
+
+  /**
+   * The approved fingers ([boxes]: parts of the page, as found and stored in the page's
+   * recipe) painted out of [p] in place, and nothing else: the skin inside each box (a little
+   * larger) gives the finger's shape; a box where that is not found any more is filled whole.
+   * The same boxes give the same result at any size (preview and full page).
+   */
+  fun removeIn(p: Px, boxes: List<FBox>) {
+    if (boxes.isEmpty()) return
+    val s = shrink(p, SIDE)
+    val w = s.w
+    val h = s.h
+    val paper = paperGrid(s, null)
+    val c3 = FloatArray(3)
+    val mask = BooleanArray(w * h)
+    val pad = max(2, min(w, h) / 40)
+    for (fb in boxes) {
+      val b0 = fb.toPx(w, h)
+      val b = IBox(max(0, b0.left - pad), max(0, b0.top - pad), min(w, b0.right + pad), min(h, b0.bottom + pad))
+      if (b.width <= 0 || b.height <= 0) continue
+      var count = 0
+      for (y in b.top until b.bottom) for (x in b.left until b.right) {
+        if (isSkin(s.data[y * w + x], paper, x, y, c3, strict = false)) {
+          mask[y * w + x] = true
+          count++
+        }
+      }
+      // (the finger no longer shows as skin here, e.g. a different light: its found box instead)
+      if (count < b0.width * b0.height / 12) {
+        for (y in b0.top until b0.bottom) for (x in b0.left until b0.right) mask[y * w + x] = true
+      }
+    }
+    if (mask.none { it }) return
+    apply(p, finish(s, mask, boxes))
+  }
+
+  /** The mask grown (shadow, nail edge), feathered, and the paper around it measured */
+  private fun finish(s: Px, mask: BooleanArray, boxes: List<FBox>): Found {
+    val w = s.w
+    val h = s.h
     val grow = max(3, min(w, h) / 90)
     val grown = dilate(mask, w, h, grow)
     val feather = max(2, min(w, h) / 200)
-    val weight = blur(grown, w, h, feather)
-    // the paper under the fingers: from the paper around them (the grown mask left out)
-    return Found(w, h, weight, boxes, paperGrid(s, grown))
+    return Found(w, h, blur(grown, w, h, feather), boxes, paperGrid(s, grown))
   }
 
   /**

@@ -8,6 +8,7 @@ import com.docready.aamunim.data.model.Preset
 import com.docready.aamunim.data.model.withItemIds
 import com.docready.aamunim.data.model.PresetItem
 import com.docready.aamunim.data.model.safeFileName
+import com.docready.aamunim.data.model.title
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -52,7 +53,38 @@ class PresetRepository(context: Context) {
   fun addNew(p: Preset): Preset = save(p.copy(id = newId()))
 
   /** A checked preset put in the place of an existing one (its id kept) */
-  fun replace(existingId: String, p: Preset): Preset = save(p.copy(id = existingId))
+  fun replace(existingId: String, p: Preset): Preset = save(replacePlan(existingId, p).preset.copy(id = existingId))
+
+  /** [preset] as it will replace an existing one; [unmatched]: the existing items with no match */
+  class ReplacePlan(val preset: Preset, val unmatched: Int)
+
+  /**
+   * The incoming preset with the existing preset's item ids carried over (so students' ticks and
+   * learned words stay with their items): matched by kind and name first, then by place (same
+   * kind); new items get new ids. The existing file-name pattern is kept unless the incoming
+   * preset has its own.
+   */
+  fun replacePlan(existingId: String, p: Preset): ReplacePlan {
+    val old = get(existingId) ?: return ReplacePlan(p, 0)
+    fun key(it: PresetItem) = it.kind to it.title.trim().lowercase().replace(Regex("\\s+"), " ")
+    val used = HashSet<Int>()
+    val ids = arrayOfNulls<String>(p.items.size)
+    p.items.forEachIndexed { i, item ->
+      val j = old.items.indices.firstOrNull { it !in used && key(old.items[it]) == key(item) }
+      if (j != null) {
+        used.add(j)
+        ids[i] = old.items[j].id
+      }
+    }
+    p.items.forEachIndexed { i, item ->
+      if (ids[i] == null && i < old.items.size && i !in used && old.items[i].kind == item.kind) {
+        used.add(i)
+        ids[i] = old.items[i].id
+      }
+    }
+    val items = p.items.mapIndexed { i, item -> item.copy(id = ids[i]?.takeIf { it.isNotEmpty() } ?: newId()) }
+    return ReplacePlan(p.copy(items = items, namePattern = p.namePattern ?: old.namePattern), old.items.size - used.size)
+  }
 
   /** A preset already named so (any case), or null */
   fun named(name: String): Preset? = _presets.value.firstOrNull { it.name.trim().equals(name.trim(), ignoreCase = true) }
@@ -106,7 +138,12 @@ class PresetRepository(context: Context) {
 private class PresetFile(val format: String, val version: Int, val preset: SharedPreset)
 
 @Serializable
-private class SharedPreset(val name: String, val items: List<PresetItem>)
+private class SharedPreset(
+  val name: String,
+  val items: List<PresetItem>,
+  /** The preset's own file-name pattern (optional: older versions leave it out, and ignore it) */
+  val namePattern: String? = null,
+)
 
 /**
  * Presets to and from files people send each other. Reading is strict: a size cap, the
@@ -130,7 +167,7 @@ object PresetCodec {
   /** The preset as a file in the app's share folder, named after it */
   fun write(context: Context, preset: Preset): File {
     val out = FileNames.outputFile(context, safeFileName(preset.name, "preset") + EXTENSION)
-    val doc = PresetFile(FORMAT, 1, SharedPreset(preset.name, preset.items))
+    val doc = PresetFile(FORMAT, 1, SharedPreset(preset.name, preset.items, preset.namePattern))
     out.writeText(strict.encodeToString(PresetFile.serializer(), doc))
     return out
   }
@@ -143,7 +180,7 @@ object PresetCodec {
 
   /** The preset as compact JSON in the shared file's format (the same checks read it back) */
   fun encodeCompact(preset: Preset): String =
-    compact.encodeToString(PresetFile.serializer(), PresetFile(FORMAT, 1, SharedPreset(preset.name, preset.items.map { it.copy(id = "") })))
+    compact.encodeToString(PresetFile.serializer(), PresetFile(FORMAT, 1, SharedPreset(preset.name, preset.items.map { it.copy(id = "") }, preset.namePattern)))
 
   fun read(file: File): Preset {
     if (!file.exists() || file.length() == 0L) throw IllegalArgumentException("The file is empty.")
@@ -168,7 +205,9 @@ object PresetCodec {
     if (name.isEmpty()) throw IllegalArgumentException("The preset has no name.")
     val items = doc.preset.items
     if (items.isEmpty() || items.size > MAX_ITEMS) throw IllegalArgumentException("The preset must have 1 to $MAX_ITEMS items.")
-    return Preset(id = PresetRepository.newId(), name = name, items = items.mapIndexed { i, it -> checked(it, i + 1) })
+    // (a pattern is plain text with {tokens}: control marks out, short)
+    val pattern = doc.preset.namePattern?.let { clean(it, 80) }?.ifEmpty { null }
+    return Preset(id = PresetRepository.newId(), name = name, items = items.mapIndexed { i, it -> checked(it, i + 1) }, namePattern = pattern)
   }
 
   /** One item made safe: sizes in range, formats that fit its kind, plain short text */
