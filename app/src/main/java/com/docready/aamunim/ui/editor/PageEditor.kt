@@ -81,6 +81,7 @@ import com.docready.aamunim.imaging.DocTools
 import com.docready.aamunim.imaging.PageRenderer
 import com.docready.aamunim.imaging.beauty.FBox
 import com.docready.aamunim.imaging.Ocr
+import com.docready.aamunim.imaging.OcrNotReady
 import com.docready.aamunim.ui.components.TextSheet
 import com.docready.aamunim.ui.components.AppIcons
 import com.docready.aamunim.ui.components.CropBox
@@ -684,6 +685,8 @@ class PageEditorState(
         if (i == index) pageText = t.text
       } catch (e: CancellationException) {
         throw e
+      } catch (_: OcrNotReady) {
+        error = Ocr.NOT_READY
       } catch (e: Throwable) {
         error = "The text could not be read: ${if (e is OutOfMemoryError) "not enough memory" else e.message ?: "unknown problem"}."
       } finally {

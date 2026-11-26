@@ -8,6 +8,12 @@ import com.docready.aamunim.save.SaveTargets
 
 /** The app's few long-lived parts (no sign-in, no network in Phase 1) */
 class DocReadyApplication : Application() {
+  override fun onCreate() {
+    super.onCreate()
+    // (text reading may ask Play services for its model)
+    com.docready.aamunim.imaging.Ocr.appContext = this
+  }
+
   val presets: PresetRepository by lazy { PresetRepository(this) }
   val folders: FolderRepository by lazy { FolderRepository(this) }
   val saveTargets: SaveTargets by lazy { SaveTargets(folders) }

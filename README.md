@@ -67,7 +67,9 @@ phone, with no sign-in:
   edits, in the app's files) a moment after each change; opening the tool again asks
   "Continue where you left off?". Home lists the drafts; a draft ends when its result is saved
   and is removed after 30 days untouched.
-- **Text (OCR)**, English, fully offline (ML Kit's bundled Latin model, inside the app): the page
+- **Text (OCR)**, English, on the phone (ML Kit's Latin model, which Google Play services
+  downloads when the app is installed; until it is there, the app says "Text reading is getting
+  ready" and makes plain PDFs, and Split suggests photos / signatures only): the page
   editor's Text action shows a page's text to select, copy or share; "Searchable PDF" (Scan, PDF
   tools) keeps each page's words as an invisible layer over the picture; pages made for a student
   offer what they say ("Use as name: …?", roll, registration no., date of birth) as chips.
@@ -87,8 +89,10 @@ phone, with no sign-in:
 - **Share to / Open with DocReady**: photos and PDFs shared or opened from other apps open
   in PDF tools / Photo / Signature.
 
-The app is offline only: it has **no internet permission** and no analytics. The text model
-is bundled (about 4 MB per CPU type in the APK; Play's per-device split delivers one).
+The app is offline only: it has **no internet permission** and no analytics. All ML Kit models
+(text, faces, photo background, document and QR scanners) come through Google Play services,
+which downloads them itself (manifest `com.google.mlkit.vision.DEPENDENCIES`:
+`ocr,face,subject_segment,barcode_ui`), so none is inside the APK.
 
 Colours: deep green (#1B6B3A; #8FD19E in dark mode) on warm neutral greys, amber for
 warnings; no blue anywhere in the interface (the "Light blue" photo background is an output

@@ -15,6 +15,7 @@ import com.docready.aamunim.ui.components.SearchableSwitch
 import com.docready.aamunim.imaging.Fact
 import com.docready.aamunim.imaging.Ocr
 import com.docready.aamunim.imaging.OcrWord
+import com.docready.aamunim.imaging.OcrNotReady
 import com.docready.aamunim.ui.components.NormBox
 import com.docready.aamunim.docReady
 import kotlinx.coroutines.delay
@@ -531,7 +532,7 @@ class PdfToolsViewModel(
           val maxBytes = kb?.let { it * 1024L }
           val sourcePages: List<File>
           val name: String
-          val words = if (ocr) ArrayList<List<OcrWord>>() else null
+          var words = if (ocr) ArrayList<List<OcrWord>>() else null
           if (m == PdfMode.ID_CARD && f != null && b != null) {
             val fb = DocTools.load(ctx, Uri.fromFile(f.file(ctx)), 1600)
             val bb = DocTools.load(ctx, Uri.fromFile(b.file(ctx)), 1600)
@@ -557,11 +558,19 @@ class PdfToolsViewModel(
                   listOf(PdfTools.LONG_DOC_SIDE, PdfTools.PAGE_LONG_SIDE)
                 }
                 val b = PdfTools.atBestSize(sides) { side -> p.rendered(ctx, edits[i], side) }
-                if (words != null) {
+                val list = words
+                if (list != null) {
                   withContext(Dispatchers.Main) { busy = "Reading the text of page ${i + 1} of ${chosen.size}…" }
-                  val read = Ocr.read(b)
-                  words.add(read.words)
-                  if (texts.size < 3) texts.add(read.text)
+                  try {
+                    val read = Ocr.read(b)
+                    list.add(read.words)
+                    if (texts.size < 3) texts.add(read.text)
+                  } catch (_: OcrNotReady) {
+                    // the text model is still coming: a plain PDF this time
+                    words = null
+                    texts.clear()
+                    withContext(Dispatchers.Main) { noteOnce(Ocr.NOT_READY + " This PDF is made without searchable text.") }
+                  }
                 }
                 DocTools.keepPage(ctx, b)
               }
@@ -613,7 +622,11 @@ class PdfToolsViewModel(
         // made for a student: what the first page says about them (offered, never filled in)
         if (studentId != null && m != PdfMode.ID_CARD && chosen.isNotEmpty()) {
           if (texts.isEmpty()) busy = "Looking for the name and numbers…"
-          facts = Ocr.facts(texts) { chosen[0].rendered(ctx, edits[0], Ocr.MAX_SIDE) }
+          try {
+            facts = Ocr.facts(texts) { chosen[0].rendered(ctx, edits[0], Ocr.MAX_SIDE) }
+          } catch (_: OcrNotReady) {
+            noteOnce(Ocr.NOT_READY)
+          }
         }
       } catch (e: Throwable) {
         error = messageOf(e, "The PDF could not be made.")
@@ -621,6 +634,11 @@ class PdfToolsViewModel(
         busy = null
       }
     }
+  }
+
+  /** A note shown once (making again does not repeat it) */
+  private fun noteOnce(n: String) {
+    if (n !in notes) notes.add(n)
   }
 
   // ---- autosave: "Continue where you left off?" (PDF tools and Split by preset each keep one)

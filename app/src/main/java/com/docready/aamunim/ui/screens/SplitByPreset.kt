@@ -66,6 +66,7 @@ import com.docready.aamunim.imaging.DocTools
 import com.docready.aamunim.imaging.InkShape
 import com.docready.aamunim.imaging.Keywords
 import com.docready.aamunim.imaging.Ocr
+import com.docready.aamunim.imaging.OcrNotReady
 import kotlinx.coroutines.Job
 import com.docready.aamunim.imaging.PdfTools
 import com.docready.aamunim.imaging.SignatureTools
@@ -237,7 +238,11 @@ class SplitState(
    * What a page shows: its words (OCR on a page about 1000 px), a face and how big, and the
    * shape of its ink
    */
-  private class PageLook(val tokens: Set<String>, val top: List<String>, val words: Int, val faceShare: Float, val ink: InkShape)
+  private class PageLook(val tokens: Set<String>, val top: List<String>, val words: Int, val faceShare: Float, val ink: InkShape, val textRead: Boolean = true)
+
+  /** Text reading is not ready yet (its model downloading): suggestions use the pictures only */
+  var textNotReady by mutableStateOf(false)
+    private set
 
   /**
    * Suggestions made again for the pages not given yet, one page at a time (each shows as soon
@@ -253,7 +258,8 @@ class SplitState(
           if (page in assigned) continue
           val look = looks[page] ?: run {
             suggesting = "Looking at page ${n + 1} of ${pages.size}…"
-            lookAt(page)?.also { looks[page] = it }
+            // (a page looked at without its text is looked at again next time)
+            lookAt(page)?.also { if (it.textRead) looks[page] = it }
           } ?: continue
           val best = choose(look, p)
           if (best != null && best !in (rejected[page] ?: emptySet<Int>()) && page !in assigned) suggested[page] = best else suggested.remove(page)
@@ -266,7 +272,13 @@ class SplitState(
 
   private suspend fun lookAt(page: PdfPage): PageLook? = try {
     val b = withContext(Dispatchers.Default) { page.rendered(ctx, recipes[page] ?: PageRecipe.Plain, Ocr.QUICK_SIDE) }
-    val text = Ocr.read(b, Ocr.QUICK_SIDE)
+    // the text model still downloading: the face, signature and ink checks still run
+    val text = try {
+      Ocr.read(b, Ocr.QUICK_SIDE).also { textNotReady = false }
+    } catch (_: OcrNotReady) {
+      textNotReady = true
+      null
+    }
     withContext(Dispatchers.Default) {
       val faceShare = try {
         DocPhoto.faces(b).firstOrNull()?.let { it.box.width() * it.box.height() / (b.width.toFloat() * b.height) } ?: 0f
@@ -276,8 +288,8 @@ class SplitState(
       val small = DocTools.scaleToMax(b, 300)
       val px = IntArray(small.width * small.height)
       small.getPixels(px, 0, small.width, 0, 0, small.width, small.height)
-      val all = text.text
-      PageLook(Keywords.tokens(all).toSet(), Keywords.top(all), text.words.size, faceShare, InkShape.of(px, small.width, small.height))
+      val all = text?.text ?: ""
+      PageLook(Keywords.tokens(all).toSet(), Keywords.top(all), text?.words?.size ?: 0, faceShare, InkShape.of(px, small.width, small.height), textRead = text != null)
     }
   } catch (e: kotlinx.coroutines.CancellationException) {
     throw e
@@ -746,6 +758,7 @@ fun SplitTool(
   if (split.selected.isEmpty()) SplitHint("Tap pages below to select them.")
   // suggestions: shown on the pages, given only with ✓ (or all at once here)
   split.suggesting?.let { BusyRow("Suggesting items · $it") }
+  if (split.textNotReady) SplitHint(Ocr.NOT_READY + " Until then, only photos and signatures are suggested.")
   val suggestions = pages.count { it in split.suggested }
   if (suggestions > 0) {
     OutlinedButton(onClick = { split.acceptAll(pages) }, enabled = idle, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {

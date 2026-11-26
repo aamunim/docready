@@ -86,6 +86,8 @@ import com.docready.aamunim.imaging.PdfTools
 import com.docready.aamunim.imaging.Fact
 import com.docready.aamunim.imaging.Ocr
 import com.docready.aamunim.imaging.OcrWord
+import com.docready.aamunim.imaging.OcrNotReady
+import com.docready.aamunim.ui.components.NotesList
 import com.docready.aamunim.imaging.Scanner
 import com.docready.aamunim.save.ReadyFile
 import com.docready.aamunim.ui.components.BeautyBadge
@@ -148,6 +150,10 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
 
   /** A searchable PDF: the pages' English text (OCR) as an invisible layer */
   var searchable by mutableStateOf(false)
+
+  /** Text reading was not ready (the model still downloading): what was done instead */
+  var ocrNote by mutableStateOf<String?>(null)
+    private set
 
   /** What the pages say about the student (name, roll…), offered as chips after making */
   var facts by mutableStateOf<List<Fact>>(emptyList())
@@ -326,20 +332,29 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
       busy = if (asPdf) "Making the PDF…" else "Making the pictures…"
       error = null
       facts = emptyList()
+      ocrNote = null
       val texts = ArrayList<String>()
       try {
         result = withContext(Dispatchers.Default) {
           val maxBytes = kb?.let { it * 1024L }
           if (asPdf) {
             // one page in memory at a time: cleaned, (read,) then kept as a file
-            val words = if (ocr) ArrayList<List<OcrWord>>() else null
+            var words = if (ocr) ArrayList<List<OcrWord>>() else null
             val cleaned = files.mapIndexed { i, f ->
               val b = prepared(f)
-              if (words != null) {
+              val list = words
+              if (list != null) {
                 withContext(Dispatchers.Main) { busy = "Reading the text of page ${i + 1} of ${files.size}…" }
-                val read = Ocr.read(b)
-                words.add(read.words)
-                texts.add(read.text)
+                try {
+                  val read = Ocr.read(b)
+                  list.add(read.words)
+                  texts.add(read.text)
+                } catch (_: OcrNotReady) {
+                  // the text model is still coming: a plain PDF this time
+                  words = null
+                  texts.clear()
+                  withContext(Dispatchers.Main) { ocrNote = Ocr.NOT_READY + " This PDF is made without searchable text." }
+                }
               }
               DocTools.keepPage(ctx, b)
             }
@@ -382,7 +397,11 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
         // made for a student: what the first page says about them (offered, never filled in)
         if (studentId != null) {
           if (texts.isEmpty()) busy = "Looking for the name and numbers…"
-          facts = Ocr.facts(texts) { prepared(files[0]) }
+          try {
+            facts = Ocr.facts(texts) { prepared(files[0]) }
+          } catch (_: OcrNotReady) {
+            if (ocrNote == null) ocrNote = Ocr.NOT_READY
+          }
         }
       } catch (e: Throwable) {
         error = messageOf(e, "The document could not be made.")
@@ -588,6 +607,7 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
           Text(f.name + " · " + bytesText(f.file.length()), style = MaterialTheme.typography.bodySmall)
         }
         if (studentId != null) FactChips(studentId, vm.facts)
+        vm.ocrNote?.let { NotesList(listOf(it), Modifier.padding(top = 8.dp)) }
       } else {
         Row(verticalAlignment = Alignment.CenterVertically) {
           SectionLabel("${vm.pages.size} page${if (vm.pages.size == 1) "" else "s"} · tap a page to edit it", Modifier.weight(1f))
