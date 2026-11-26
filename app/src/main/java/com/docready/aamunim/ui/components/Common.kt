@@ -41,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.docready.aamunim.ui.theme.DocReadyColors
 import com.docready.aamunim.ui.theme.SectionLabelStyle
 
@@ -54,7 +55,7 @@ fun Context.findActivity(): Activity? {
   return null
 }
 
-/** A white top bar: back, a title (and a line under it), actions on the right */
+/** The top bar on the page's own background: back, a Manrope title (and a line under it), actions */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DocTopBar(
@@ -84,8 +85,24 @@ fun DocTopBar(
       }
     },
     actions = actions,
-    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background, scrolledContainerColor = MaterialTheme.colorScheme.background),
   )
+}
+
+/** A big screen title (tab screens: "Students", "Presets") with actions on the right */
+@Composable
+fun ScreenTitle(title: String, subtitle: String? = null, actions: @Composable RowScope.() -> Unit = {}) {
+  Row(
+    Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 20.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(10.dp),
+  ) {
+    Column(Modifier.weight(1f)) {
+      Text(title, style = MaterialTheme.typography.headlineMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      if (subtitle != null) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    actions()
+  }
 }
 
 @Composable
@@ -93,9 +110,87 @@ fun SectionLabel(text: String, modifier: Modifier = Modifier) {
   Text(
     text,
     style = SectionLabelStyle,
-    color = MaterialTheme.colorScheme.onSurfaceVariant,
-    modifier = modifier.padding(top = 18.dp, bottom = 8.dp),
+    color = MaterialTheme.colorScheme.onSurface,
+    modifier = modifier.padding(top = 18.dp, bottom = 10.dp),
   )
+}
+
+/** A white card: radius 18, a 1 dp outline (optional click) */
+@Composable
+fun AppCard(
+  modifier: Modifier = Modifier,
+  onClick: (() -> Unit)? = null,
+  border: BorderStroke? = null,
+  color: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.surface,
+  content: @Composable () -> Unit,
+) {
+  val b = border ?: BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+  if (onClick != null) {
+    Surface(onClick = onClick, shape = RoundedCornerShape(18.dp), color = color, border = b, modifier = modifier, content = content)
+  } else {
+    Surface(shape = RoundedCornerShape(18.dp), color = color, border = b, modifier = modifier, content = content)
+  }
+}
+
+/** A 44 dp round icon button with an outline (search, sort, QR…) */
+@Composable
+fun CircleIconButton(icon: ImageVector, description: String, onClick: () -> Unit, modifier: Modifier = Modifier, filled: Boolean = false) {
+  Surface(
+    onClick = onClick,
+    shape = androidx.compose.foundation.shape.CircleShape,
+    color = if (filled) DocReadyColors.extra.chip else MaterialTheme.colorScheme.surface,
+    border = if (filled) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+    modifier = modifier.size(44.dp),
+  ) {
+    Box(contentAlignment = Alignment.Center) { Icon(icon, contentDescription = description, modifier = Modifier.size(20.dp)) }
+  }
+}
+
+/** How a file stands against its limit */
+enum class FitState { FITS, CLOSE, TOO_BIG, NONE }
+
+/** "Fits" (green) / "Close" (amber) / "Too big" (red) / neutral, as a small pill */
+@Composable
+fun StatusBadge(text: String, state: FitState, modifier: Modifier = Modifier) {
+  val extra = DocReadyColors.extra
+  val (bg, fg) = when (state) {
+    FitState.FITS -> extra.successContainer to extra.onSuccessContainer
+    FitState.CLOSE -> extra.warningContainer to extra.onWarningContainer
+    FitState.TOO_BIG -> MaterialTheme.colorScheme.errorContainer to MaterialTheme.colorScheme.error
+    FitState.NONE -> extra.chip to extra.text2
+  }
+  Text(
+    text,
+    style = MaterialTheme.typography.labelSmall,
+    fontWeight = FontWeight.Bold,
+    color = fg,
+    maxLines = 1,
+    modifier = modifier.background(bg, RoundedCornerShape(10.dp)).padding(horizontal = 8.dp, vertical = 3.dp),
+  )
+}
+
+/** A thin rounded progress bar (5 dp) */
+@Composable
+fun SlimProgress(fraction: Float, modifier: Modifier = Modifier, color: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.primary) {
+  Box(modifier.fillMaxWidth().height(5.dp).background(DocReadyColors.extra.chip, RoundedCornerShape(3.dp))) {
+    Box(Modifier.fillMaxWidth(fraction.coerceIn(0f, 1f)).height(5.dp).background(color, RoundedCornerShape(3.dp)))
+  }
+}
+
+/** "PDF" / "JPG" / "PNG" / "ZIP" in a small rounded square, coloured by kind */
+@Composable
+fun FileKindTile(name: String, size: Int = 36) {
+  val ext = name.substringAfterLast('.', "").uppercase().take(4).ifEmpty { "FILE" }
+  val extra = DocReadyColors.extra
+  val (bg, fg) = when (ext) {
+    "PDF" -> MaterialTheme.colorScheme.errorContainer to MaterialTheme.colorScheme.error
+    "JPG", "JPEG", "PNG" -> extra.successContainer to MaterialTheme.colorScheme.primary
+    "ZIP" -> extra.warningContainer to extra.onWarningContainer
+    else -> extra.chip to extra.text2
+  }
+  Box(Modifier.size(size.dp).background(bg, RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
+    Text(ext, color = fg, fontWeight = FontWeight.ExtraBold, fontSize = 10.5.sp)
+  }
 }
 
 /** A whole-number field (px, KB); blank allowed */
@@ -134,7 +229,7 @@ fun ResultCard(ok: Boolean, title: String, detail: String, modifier: Modifier = 
   val extra = DocReadyColors.extra
   Surface(
     modifier = modifier.fillMaxWidth(),
-    shape = RoundedCornerShape(14.dp),
+    shape = RoundedCornerShape(18.dp),
     color = if (ok) extra.successContainer else extra.warningContainer,
     border = BorderStroke(1.dp, if (ok) extra.successBorder else extra.warningBorder),
   ) {
@@ -195,14 +290,14 @@ fun BusyRow(text: String, modifier: Modifier = Modifier) {
   }
 }
 
-/** The white bar at the bottom of a tool screen with its main buttons */
+/** The white bar at the bottom of a tool screen with its main buttons (pills, 50–52 dp) */
 @Composable
 fun BottomActions(content: @Composable RowScope.() -> Unit) {
   Surface(color = MaterialTheme.colorScheme.surface) {
     Column {
-      HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+      HorizontalDivider(color = MaterialTheme.colorScheme.outline)
       Row(
-        Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp),
+        Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 20.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
         content = content,
@@ -215,7 +310,7 @@ fun BottomActions(content: @Composable RowScope.() -> Unit) {
 @Composable
 fun IconTile(icon: ImageVector, tint: androidx.compose.ui.graphics.Color, background: androidx.compose.ui.graphics.Color, size: Int = 40) {
   Box(
-    Modifier.size(size.dp).background(background, RoundedCornerShape(12.dp)),
+    Modifier.size(size.dp).background(background, RoundedCornerShape(13.dp)),
     contentAlignment = Alignment.Center,
   ) {
     Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size((size / 2).dp))

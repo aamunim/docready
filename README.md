@@ -103,9 +103,11 @@ The app is offline only: it has **no internet permission** and no analytics. All
 which downloads them itself (manifest `com.google.mlkit.vision.DEPENDENCIES`:
 `ocr,face,subject_segment,barcode_ui`), so none is inside the APK.
 
-Colours: deep green (#1B6B3A; #8FD19E in dark mode) on warm neutral greys, amber for
-warnings; no blue anywhere in the interface (the "Light blue" photo background is an output
-colour for form photos, not UI).
+Colours: deep green #1B6B3A (dark theme #8FD19E) on warm neutral greys (#F7F6F3 page, white
+cards, #E4DFD5 outlines), amber #B45309 for warnings, #B42318 for "too big"; no blue anywhere
+in the interface (the "Light blue" photo background is an output colour for form photos, not
+UI). Type: Manrope (titles) and Inter (text), bundled in `res/font` as Latin subsets (about
+310 KB; SIL Open Font License, texts in `licenses/`).
 
 The ML Kit
 models are delivered by Google Play services (the app stays small, and the scanner needs no

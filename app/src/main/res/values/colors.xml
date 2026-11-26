@@ -3,5 +3,5 @@
     <!-- deep green on warm greys (no blue anywhere) -->
     <color name="brand_primary">#1B6B3A</color>
     <color name="window_light">#F7F6F3</color>
-    <color name="window_dark">#121110</color>
+    <color name="window_dark">#141312</color>
 </resources>
