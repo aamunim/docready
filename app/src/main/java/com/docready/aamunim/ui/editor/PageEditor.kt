@@ -1185,7 +1185,7 @@ private fun EditorTabs(state: PageEditorState) {
         Modifier
           .weight(1f)
           .height(56.dp)
-          .background(if (on) EditorColors.Selected else Color.Transparent, RoundedCornerShape(14.dp))
+          .background(if (on) EditorColors.Selected else Color.Transparent, RoundedCornerShape(18.dp))
           .selectable(selected = on, role = androidx.compose.ui.semantics.Role.Tab, onClick = { state.selectTab(t) }),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,

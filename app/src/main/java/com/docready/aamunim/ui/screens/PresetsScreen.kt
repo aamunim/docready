@@ -307,7 +307,7 @@ private fun PresetCard(p: Preset, index: Int, used: Int, onQr: () -> Unit, onCli
 @Composable
 fun NoPresetsCard(onCreate: () -> Unit, modifier: Modifier = Modifier) {
   Surface(
-    shape = RoundedCornerShape(14.dp),
+    shape = RoundedCornerShape(18.dp),
     color = MaterialTheme.colorScheme.secondaryContainer,
     modifier = modifier.fillMaxWidth(),
   ) {
@@ -404,7 +404,7 @@ fun PresetDetailScreen(
       } else {
         preset.items.forEachIndexed { i, item ->
           Surface(
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(18.dp),
             color = MaterialTheme.colorScheme.surface,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
             modifier = Modifier.fillMaxWidth(),
@@ -672,7 +672,7 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
 private fun ItemEditor(i: Int, e: EditItem, items: SnapshotStateList<EditItem>) {
   VSpace(10)
   Surface(
-    shape = RoundedCornerShape(14.dp),
+    shape = RoundedCornerShape(18.dp),
     color = MaterialTheme.colorScheme.surface,
     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
     modifier = Modifier.fillMaxWidth(),

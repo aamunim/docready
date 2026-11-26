@@ -942,7 +942,7 @@ private fun PresetField(presets: List<Preset>, chosen: Preset?, onPick: (Preset)
   Box {
     Surface(
       onClick = { open = true },
-      shape = RoundedCornerShape(14.dp),
+      shape = RoundedCornerShape(18.dp),
       color = MaterialTheme.colorScheme.surface,
       border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
       modifier = Modifier.fillMaxWidth().height(48.dp),
