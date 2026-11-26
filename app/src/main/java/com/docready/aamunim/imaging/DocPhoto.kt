@@ -48,12 +48,12 @@ object DocPhoto {
   class Made(val bitmap: Bitmap, val fixedSize: Boolean, val frame: RectF)
 
   /** The faces, biggest first (px of the picture) */
-  fun faces(b: Bitmap): List<FaceInfo> {
+  fun faces(b: Bitmap, minFaceSize: Float = 0.06f): List<FaceInfo> {
     val det = FaceDetection.getClient(
       FaceDetectorOptions.Builder()
         .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
         .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
-        .setMinFaceSize(0.06f)
+        .setMinFaceSize(minFaceSize)
         .build(),
     )
     try {

@@ -28,6 +28,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
@@ -141,7 +144,7 @@ private fun rememberPresetImport(onImported: (Preset) -> Unit): () -> Unit {
 }
 
 @Composable
-fun PresetsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Unit) {
+fun PresetsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Unit, onScanQr: () -> Unit = {}) {
   val repo = LocalContext.current.docReady.presets
   val presets by repo.presets.collectAsState()
   var query by rememberSaveable { mutableStateOf("") }
@@ -150,6 +153,7 @@ fun PresetsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Uni
   Scaffold(
     topBar = {
       DocTopBar("Presets", onBack, actions = {
+        TextButton(onClick = onScanQr) { Text("Scan QR") }
         TextButton(onClick = import) { Text("Import") }
         if (presets.isNotEmpty()) TextButton(onClick = onNew) { Text("+ New") }
       })
@@ -175,9 +179,11 @@ fun PresetsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Uni
         Button(onClick = onNew, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Create your first preset") }
         Text("or", modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         OutlinedButton(onClick = import, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Import a preset someone sent you") }
+        VSpace(8)
+        OutlinedButton(onClick = onScanQr, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Scan a preset's QR code") }
         VSpace(24)
         Text(
-          "Later, on each preset: Edit · Duplicate · Share (WhatsApp, file) · Delete",
+          "Later, on each preset: Edit · Duplicate · Share (file or QR code) · Delete",
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           textAlign = TextAlign.Center,
@@ -283,9 +289,11 @@ fun PresetDetailScreen(
   onBack: () -> Unit,
   onMake: (Preset, Int) -> Unit,
   onEdit: (String) -> Unit,
+  onShowQr: (String) -> Unit = {},
 ) {
   val context = LocalContext.current
   val repo = context.docReady.presets
+  var shareMenu by remember { mutableStateOf(false) }
   val presets by repo.presets.collectAsState()
   val preset = presets.firstOrNull { it.id == id }
   var confirmDelete by remember { mutableStateOf(false) }
@@ -296,7 +304,19 @@ fun PresetDetailScreen(
         onBack,
         actions = {
           if (preset != null) {
-            IconButton(onClick = { sharePreset(context, preset) }) { Icon(AppIcons.Share, contentDescription = "Share preset") }
+            Box {
+              IconButton(onClick = { shareMenu = true }) { Icon(AppIcons.Share, contentDescription = "Share preset") }
+              DropdownMenu(expanded = shareMenu, onDismissRequest = { shareMenu = false }) {
+                DropdownMenuItem(text = { Text("Send as a file") }, onClick = {
+                  shareMenu = false
+                  sharePreset(context, preset)
+                })
+                DropdownMenuItem(text = { Text("Show QR") }, onClick = {
+                  shareMenu = false
+                  onShowQr(preset.id)
+                })
+              }
+            }
             IconButton(onClick = { repo.duplicate(preset.id)?.let { onEdit(it.id) } }) { Icon(AppIcons.Copy, contentDescription = "Duplicate") }
             IconButton(onClick = { onEdit(preset.id) }) { Icon(AppIcons.Edit, contentDescription = "Edit") }
             IconButton(onClick = { confirmDelete = true }) { Icon(AppIcons.Delete, contentDescription = "Delete") }
@@ -367,6 +387,8 @@ fun PresetDetailScreen(
 
 /** One item of a preset while it is being edited (text fields keep what is typed) */
 private class EditItem(item: PresetItem) {
+  /** The item's lasting id (a student's files point to it); "" for a new item */
+  var id = item.id
   var kind by mutableStateOf(item.kind)
   var width by mutableStateOf(item.widthPx?.toString() ?: "")
   var height by mutableStateOf(item.heightPx?.toString() ?: "")
@@ -376,10 +398,11 @@ private class EditItem(item: PresetItem) {
   var name by mutableStateOf(item.name ?: "")
   var required by mutableStateOf(item.required)
   var pagesHint by mutableStateOf(item.pagesHint ?: "")
+  var keywords by mutableStateOf(item.keywords.joinToString(", "))
 
   /** As text, to be kept in the saved screen state */
   fun toSaved(): ArrayList<String> =
-    arrayListOf(kind.name, width, height, maxKb, format.name, background.name, name, required.toString(), pagesHint)
+    arrayListOf(kind.name, width, height, maxKb, format.name, background.name, name, required.toString(), pagesHint, id, keywords)
 
   companion object {
     fun fromSaved(v: List<String>): EditItem = EditItem(PresetItem(ItemKind.valueOf(v[0]))).apply {
@@ -391,6 +414,8 @@ private class EditItem(item: PresetItem) {
       name = v.getOrNull(6) ?: ""
       required = v.getOrNull(7)?.toBooleanStrictOrNull() ?: true
       pagesHint = v.getOrNull(8) ?: ""
+      id = v.getOrNull(9) ?: ""
+      keywords = v.getOrNull(10) ?: ""
     }
 
     fun newOf(kind: ItemKind): EditItem = EditItem(
@@ -416,6 +441,7 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
   val existing = remember(id) { repo.get(id) }
   // (kept when the screen turns or the app is closed in the background)
   var name by rememberSaveable(id) { mutableStateOf(existing?.name ?: "") }
+  var namePattern by rememberSaveable(id) { mutableStateOf(existing?.namePattern ?: "") }
   val items = rememberSaveable(id, saver = EditItemsSaver) {
     mutableStateListOf<EditItem>().apply { existing?.items?.forEach { add(EditItem(it)) } }
   }
@@ -458,9 +484,11 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
         name = e.name.trim().take(60).ifEmpty { null },
         required = e.required,
         pagesHint = if (e.kind == ItemKind.DOCUMENT) e.pagesHint.trim().take(20).ifEmpty { null } else null,
+        id = e.id,
+        keywords = e.keywords.split(',').map { it.trim().take(30) }.filter { it.isNotEmpty() }.distinct().take(20),
       )
     }
-    return Preset(existing?.id ?: PresetRepository.newId(), name.trim().take(60), built)
+    return Preset(existing?.id ?: PresetRepository.newId(), name.trim().take(60), built, namePattern = namePattern.trim().take(80).ifEmpty { null })
   }
 
   fun save() {
@@ -491,6 +519,15 @@ fun PresetEditScreen(id: String, onDone: () -> Unit) {
         value = name,
         onValueChange = { name = it.take(60) },
         label = { Text("Preset name (e.g. B.Ed admission)") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+      )
+      VSpace(8)
+      OutlinedTextField(
+        value = namePattern,
+        onValueChange = { namePattern = it.take(80) },
+        label = { Text("File names (optional), e.g. {roll}_{item}") },
+        placeholder = { Text("The general pattern (Settings → File names)") },
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
       )
@@ -601,6 +638,18 @@ private fun ItemEditor(i: Int, e: EditItem, items: SnapshotStateList<EditItem>) 
           )
         }
       }
+      if (e.kind == ItemKind.DOCUMENT) {
+        VSpace(8)
+        OutlinedTextField(
+          value = e.keywords,
+          onValueChange = { e.keywords = it.take(300) },
+          label = { Text("Keywords (optional)") },
+          placeholder = { Text("secondary, SSC, marksheet") },
+          supportingText = { Text("Words on this paper, comma separated: Split by preset suggests pages that have them.") },
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth(),
+        )
+      }
       VSpace(8)
       val formats = when (e.kind) {
         ItemKind.PHOTO -> listOf(OutputFormat.JPG)
@@ -622,3 +671,7 @@ private fun ItemEditor(i: Int, e: EditItem, items: SnapshotStateList<EditItem>) 
     }
   }
 }
+
+/** The file-name tokens a preset gives ({preset}, and its own pattern if it has one) */
+fun presetNaming(p: Preset?): com.docready.aamunim.data.NameContext =
+  com.docready.aamunim.data.NameContext(preset = p?.name, presetPattern = p?.namePattern)

@@ -3,8 +3,19 @@ package com.docready.aamunim.save
 import android.content.Context
 import java.io.File
 
-/** A ready file made by the app (in its private cache) with the name it should be saved as */
-data class ReadyFile(val file: File, val name: String, val mime: String)
+/**
+ * A ready file made by the app (in its private cache) with the name it should be saved as.
+ * [maxKb] / [exactSize]: the preset item's limit it must meet (the size checker, "Fix to fit");
+ * [itemIndex]: which preset item it is (a student's checklist).
+ */
+data class ReadyFile(
+  val file: File,
+  val name: String,
+  val mime: String,
+  val maxKb: Int? = null,
+  val exactSize: Boolean = false,
+  val itemIndex: Int? = null,
+)
 
 /**
  * Where ready files can go. Phase 1: this phone and the system share sheet. Phase 2 adds the
@@ -20,7 +31,13 @@ enum class SaveTargetKind(val title: String) {
 
 sealed interface SaveOutcome {
   /** [where]: a place people understand ("Downloads / DocReady / My form") */
-  data class Saved(val where: String, val names: List<String>, val note: String? = null) : SaveOutcome
+  data class Saved(
+    val where: String,
+    val names: List<String>,
+    val note: String? = null,
+    /** What was saved, with its link (a student keeps it) */
+    val files: List<com.docready.aamunim.data.model.SavedFile> = emptyList(),
+  ) : SaveOutcome
   data object Shared : SaveOutcome
   data class Failed(val message: String) : SaveOutcome
 }

@@ -105,6 +105,9 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
   private val item = preset?.items?.getOrNull(itemIndex)?.takeIf { it.kind == ItemKind.SIGNATURE }
     ?: preset?.items?.firstOrNull { it.kind == ItemKind.SIGNATURE }
 
+  /** The item's place in its preset (a student's checklist), or null */
+  val itemPos: Int? = item?.let { preset?.items?.indexOf(it) }?.takeIf { it >= 0 }
+
   private var widthState by mutableStateOf((item?.widthPx ?: 300).toString())
   private var heightState by mutableStateOf((item?.heightPx ?: 80).toString())
   private var maxKbState by mutableStateOf(if (item != null) item.maxKb?.toString() ?: "" else "60")
@@ -280,7 +283,7 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
             val file = FileNames.outputFile(ctx, name)
             file.writeBytes(bytes)
             ImageResult(
-              ReadyFile(file, name, if (png) "image/png" else "image/jpeg"),
+              ReadyFile(file, name, if (png) "image/png" else "image/jpeg", kb, exactSize = true, itemIndex = itemPos),
               BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap(),
               w, h, bytes.size.toLong(), kb, fits, if (png) "PNG" else "JPG", emptyList(),
             )
@@ -489,7 +492,7 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
         placeResult = withContext(Dispatchers.Default) {
           val edits = formRecipe
           val page = DocTools.mutable(
-            DocTools.scaleToMax(PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), if (edits.quad != null) 2600 else 2400), edits), 2400),
+            DocTools.scaleToMax(PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), if (edits.quad != null) 2600 else 2400), edits, 2400), 2400),
           )
           Canvas(page).drawBitmap(
             signature,
@@ -509,7 +512,7 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
               kept.delete() // (in the PDF now)
             }
             FilesResult(
-              listOf(ReadyFile(out, name, "application/pdf")),
+              listOf(ReadyFile(out, name, "application/pdf", kb)),
               previewImg,
               size, size, kb, fits, 1, OutputFormat.PDF,
             )
@@ -519,7 +522,7 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
             val out = FileNames.outputFile(ctx, name)
             out.writeBytes(fit.bytes)
             FilesResult(
-              listOf(ReadyFile(out, name, "image/jpeg")),
+              listOf(ReadyFile(out, name, "image/jpeg", kb)),
               DocTools.thumbnail(out, 600)?.asImageBitmap(),
               fit.bytes.size.toLong(), fit.bytes.size.toLong(), kb, fit.fits, 1, OutputFormat.JPG,
             )
@@ -535,7 +538,7 @@ class SignatureViewModel(app: Application, presetId: String?, itemIndex: Int) : 
 }
 
 @Composable
-fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}) {
+fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}, studentId: String? = null) {
   val app = LocalContext.current.applicationContext as Application
   val vm: SignatureViewModel = viewModel { SignatureViewModel(app, presetId, itemIndex) }
   // the shared page editor takes the whole screen while it is open
@@ -561,11 +564,15 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNew
           OutlinedButton(onClick = { vm.process() }, enabled = vm.busy == null, modifier = Modifier.height(52.dp)) {
             Text(if (vm.result == null) "Make it" else "Make again")
           }
-          Button(
-            onClick = { saving = true },
-            enabled = vm.result != null && !vm.stale && vm.busy == null,
-            modifier = Modifier.weight(1f).height(52.dp),
-          ) { Text("Save or share") }
+          if (studentId != null) {
+            AddToStudentButton(studentId, vm.result?.ready?.takeIf { !vm.stale && vm.busy == null }?.let { listOf(it) }, vm.preset, Modifier.weight(1f), onBack)
+          } else {
+            Button(
+              onClick = { saving = true },
+              enabled = vm.result != null && !vm.stale && vm.busy == null,
+              modifier = Modifier.weight(1f).height(52.dp),
+            ) { Text("Save or share") }
+          }
         }
       }
     },
@@ -657,11 +664,11 @@ fun SignatureScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNew
 
   val ready = vm.result?.ready
   if (saving && ready != null) {
-    SaveSheet(listOf(ready), defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { saving = false })
+    SaveSheet(listOf(ready), defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { saving = false }, naming = presetNaming(vm.preset))
   }
   val page = vm.placeResult
   if (savingPage && page != null) {
-    SaveSheet(page.files, defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { savingPage = false })
+    SaveSheet(page.files, defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { savingPage = false }, naming = presetNaming(vm.preset))
   }
 }
 

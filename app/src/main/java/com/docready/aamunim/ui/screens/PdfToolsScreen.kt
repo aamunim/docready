@@ -1,5 +1,27 @@
 package com.docready.aamunim.ui.screens
 
+import com.docready.aamunim.data.Draft
+import com.docready.aamunim.data.DraftCut
+import com.docready.aamunim.data.DraftHost
+import com.docready.aamunim.data.DraftPage
+import com.docready.aamunim.data.DraftRepository
+import com.docready.aamunim.data.model.title
+import com.docready.aamunim.ui.components.DraftOffer
+import com.docready.aamunim.ui.components.DuplicateBadge
+import com.docready.aamunim.ui.components.Duplicates
+import com.docready.aamunim.ui.components.DuplicatesBar
+import com.docready.aamunim.ui.components.FactChips
+import com.docready.aamunim.ui.components.SearchableSwitch
+import com.docready.aamunim.imaging.Fact
+import com.docready.aamunim.imaging.Ocr
+import com.docready.aamunim.imaging.OcrWord
+import com.docready.aamunim.imaging.OcrNotReady
+import com.docready.aamunim.ui.components.NormBox
+import com.docready.aamunim.docReady
+import kotlinx.coroutines.delay
+import com.docready.aamunim.ui.components.ScanAnimationCard
+import com.docready.aamunim.ui.components.ScanAnim
+import com.docready.aamunim.data.model.beautyBadge
 import android.app.Activity
 import android.app.Application
 import android.content.ActivityNotFoundException
@@ -74,6 +96,8 @@ import com.docready.aamunim.intake.Intake
 import com.docready.aamunim.intake.IntakeTarget
 import com.docready.aamunim.intake.IncomingFile
 import com.docready.aamunim.save.ReadyFile
+import com.docready.aamunim.ui.components.animationsEnabled
+import com.docready.aamunim.ui.components.BeautyBadge
 import com.docready.aamunim.ui.components.AppIcons
 import com.docready.aamunim.ui.components.BottomActions
 import com.docready.aamunim.ui.components.BusyRow
@@ -151,7 +175,7 @@ class PdfPage(
   fun rendered(context: Context, recipe: PageRecipe, maxSide: Int): Bitmap {
     // straightening from corners wants more detail than the page it gives
     val side = if (recipe.quad != null) maxOf(maxSide, 2600) else maxSide
-    return DocTools.scaleToMax(PageRenderer.render(loadSource(context, side), recipe), maxSide)
+    return DocTools.scaleToMax(PageRenderer.render(loadSource(context, side), recipe, maxSide), maxSide)
   }
 }
 
@@ -163,12 +187,31 @@ private fun listThumb(b: Bitmap): ImageBitmap {
   return lean.asImageBitmap()
 }
 
-class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : AndroidViewModel(app) {
+class PdfToolsViewModel(
+  app: Application,
+  private val startMode: PdfMode = PdfMode.MERGE,
+  private val presetId: String? = null,
+  private val itemIndex: Int = -1,
+  private val studentId: String? = null,
+  resume: Boolean = false,
+) : AndroidViewModel(app) {
+  /** A preset's document item this PDF is made for (from a student's checklist), or null */
+  val preset = app.docReady.presets.get(presetId)
+  private val forItem = preset?.items?.getOrNull(itemIndex)?.takeIf { it.kind == com.docready.aamunim.data.model.ItemKind.DOCUMENT }
+  val itemPos: Int? = if (forItem != null) itemIndex else null
+
   private val ctx: Application get() = getApplication()
 
   var mode by mutableStateOf(startMode)
   val pages = mutableStateListOf<PdfPage>()
-  var maxKbText by mutableStateOf("")
+  var maxKbText by mutableStateOf(forItem?.maxKb?.toString() ?: "")
+
+  /** A searchable PDF: the pages' English text (OCR) as an invisible layer (merge / compress) */
+  var searchable by mutableStateOf(false)
+
+  /** What the pages say about the student (name, roll…), offered as chips after making */
+  var facts by mutableStateOf<List<Fact>>(emptyList())
+    private set
   var busy by mutableStateOf<String?>(null)
   var result by mutableStateOf<FilesResult?>(null)
   var error by mutableStateOf<String?>(null)
@@ -197,6 +240,11 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
   }
 
   /** Split by preset: the pages given out to a preset's items */
+  /** A photo being cleaned as it is added (the scanning animation) */
+  var anim by mutableStateOf<ScanAnim?>(null)
+    private set
+  private var animKey = 0
+
   /** Each page's edits (the page editor), shared with Split by preset */
   val recipes = mutableStateMapOf<PdfPage, PageRecipe>()
 
@@ -206,7 +254,7 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
   /** A page was edited by hand (compress then never hands back the untouched original) */
   private var userEdited = false
 
-  val split = SplitState(app, viewModelScope, recipes, thumbs)
+  val split = SplitState(app, viewModelScope, recipes, thumbs) { pages.toList() }
 
   // ---- the shared page editor
   var editor by mutableStateOf<PageEditorState?>(null)
@@ -224,6 +272,7 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
       EditorMode.DOCUMENT,
       onDone = { done -> applyRecipes(list, done) },
       onClose = { editor = null },
+      animate = animationsEnabled(ctx),
     )
   }
 
@@ -250,6 +299,22 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
     }
   }
 
+  /** "Fingers found — remove?" answered on the page: painted over */
+  fun setFingers(p: PdfPage, on: Boolean) {
+    val r = (recipes[p] ?: return).copy(fingers = on)
+    recipes[p] = r
+    userEdited = true
+    result = null
+    split.onRecipesChanged(listOf(p))
+    viewModelScope.launch {
+      try {
+        thumbs[p] = withContext(Dispatchers.Default) { listThumb(p.rendered(ctx, r, 400)) }
+      } catch (e: Throwable) {
+        error = messageOf(e, "The page could not be updated.")
+      }
+    }
+  }
+
   /** Several pages came in by Share / Open with: offer to split them by preset */
   var suggestSplit by mutableStateOf(false)
 
@@ -271,7 +336,8 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
       val before = pages.size
       val problems = mutableListOf<String>()
       try {
-        for ((fileOf, info) in items) {
+        for ((index, item) in items.withIndex()) {
+          val (fileOf, info) = item
           val (mime, name) = info
           val pagesBefore = pages.size
           try {
@@ -300,12 +366,28 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
               }
             } else {
               // the tile shows the photo as it will come out (shadows removed, colour evened)
-              val shown = withContext(Dispatchers.Default) {
-                listThumb(PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), 400), PageRecipe.Document))
+              // the scanning animation sweeps over the photo while it is cleaned (Magic)
+              val raw = withContext(Dispatchers.Default) { DocTools.load(ctx, Uri.fromFile(f), 900).asImageBitmap() }
+              anim = ScanAnim(animKey++, raw, null, "Cleaning $name…")
+              // fingers holding the paper: painted out by default where found (never over a face)
+              val start = withContext(Dispatchers.Default) {
+                val found = try {
+                  PageRenderer.findFingers(DocTools.load(ctx, Uri.fromFile(f), 1600), PageRecipe.Document)
+                } catch (_: Throwable) {
+                  null
+                }
+                PageRenderer.withFingers(PageRecipe.Document, found)
               }
+              val (shown, cleaned) = withContext(Dispatchers.Default) {
+                val c = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), 900), start)
+                listThumb(c.copy(Bitmap.Config.ARGB_8888, false)) to c.asImageBitmap()
+              }
+              anim = anim?.copy(after = cleaned, done = true, label = "$name ready")
+              // (only a few photos, or the last one, pause to show the result)
+              if (animationsEnabled(ctx) && (items.size <= 3 || index == items.size - 1)) delay(600)
               val page = PdfPage(shown, name, f.length(), f, -1)
               // a photo of paper: shadows removed, colour evened (changeable in the editor)
-              recipes[page] = PageRecipe.Document
+              recipes[page] = start
               pages.add(page)
               filesAdded++
               singlePdf = null
@@ -319,6 +401,7 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
         }
       } finally {
         busy = null
+        anim = null
       }
       val added = if (pages.size > before) pages.subList(before, pages.size).toList() else emptyList()
       if (problems.isNotEmpty()) error = problems.joinToString("\n")
@@ -334,11 +417,26 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
     }
   }
 
+  /** Pages that look like an earlier page (the same paper added twice) */
+  val duplicates = Duplicates(
+    viewModelScope,
+    pages,
+    { it.thumb },
+    changed = {
+      pagesChanged = true
+      result = null
+      split.onPagesChanged(pages)
+    },
+    // Undo gives the pages back their items and cuts in Split by preset
+    keep = { gone -> split.keepFor(gone) },
+  )
+
   fun move(index: Int, by: Int) {
     val to = index + by
     if (index !in pages.indices || to !in pages.indices) return
     val p = pages.removeAt(index)
     pages.add(to, p)
+    duplicates.forgetUndo()
     pagesChanged = true
     result = null
     split.onPagesChanged(pages)
@@ -346,6 +444,7 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
 
   fun remove(index: Int) {
     if (index in pages.indices) pages.removeAt(index)
+    duplicates.forgetUndo()
     pagesChanged = true
     result = null
     split.onPagesChanged(pages)
@@ -353,6 +452,7 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
 
   fun clear() {
     pages.clear()
+    duplicates.forgetUndo()
     recipes.clear()
     thumbs.clear()
     userEdited = false
@@ -437,14 +537,18 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
     val original = singlePdf?.takeIf { m == PdfMode.COMPRESS && !pagesChanged && !userEdited }
     val edits = chosen.map { recipes[it] ?: PageRecipe.Plain }
     val base = FileNames.safeBase(firstName ?: "document")
+    val ocr = searchable && m != PdfMode.ID_CARD
+    val texts = ArrayList<String>()
     viewModelScope.launch {
       busy = "Making the PDF…"
       error = null
+      facts = emptyList()
       try {
         result = withContext(Dispatchers.Default) {
           val maxBytes = kb?.let { it * 1024L }
           val sourcePages: List<File>
           val name: String
+          var words = if (ocr) ArrayList<List<OcrWord>>() else null
           if (m == PdfMode.ID_CARD && f != null && b != null) {
             val fb = DocTools.load(ctx, Uri.fromFile(f.file(ctx)), 1600)
             val bb = DocTools.load(ctx, Uri.fromFile(b.file(ctx)), 1600)
@@ -454,7 +558,8 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
             sourcePages = listOf(DocTools.keepPage(ctx, page))
             name = "nid_both_sides.pdf"
           } else {
-            val keepAsIs = original != null && maxBytes != null && original.length() <= maxBytes
+            // (a searchable PDF is always made again: the original has no text layer of this app's)
+            val keepAsIs = original != null && maxBytes != null && original.length() <= maxBytes && !ocr
             // the full pages are made now, one at a time (not when the PDF was opened)
             sourcePages = if (keepAsIs) {
               emptyList()
@@ -462,7 +567,28 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
               chosen.mapIndexed { i, p ->
                 withContext(Dispatchers.Main) { busy = "Preparing page ${i + 1} of ${chosen.size}…" }
                 // the page made from its source with its edits, kept as a work file
-                DocTools.keepPage(ctx, p.rendered(ctx, edits[i], PdfTools.PAGE_LONG_SIDE))
+                // full detail (smaller only if a KB limit needs it; long documents a little smaller)
+                val sides = if (chosen.size <= 30) {
+                  listOf(PdfTools.DOC_LONG_SIDE, 2400, PdfTools.PAGE_LONG_SIDE)
+                } else {
+                  listOf(PdfTools.LONG_DOC_SIDE, PdfTools.PAGE_LONG_SIDE)
+                }
+                val b = PdfTools.atBestSize(sides) { side -> p.rendered(ctx, edits[i], side) }
+                val list = words
+                if (list != null) {
+                  withContext(Dispatchers.Main) { busy = "Reading the text of page ${i + 1} of ${chosen.size}…" }
+                  try {
+                    val read = Ocr.read(b)
+                    list.add(read.words)
+                    if (texts.size < 3) texts.add(read.text)
+                  } catch (_: OcrNotReady) {
+                    // the text model is still coming: a plain PDF this time
+                    words = null
+                    texts.clear()
+                    withContext(Dispatchers.Main) { noteOnce(Ocr.NOT_READY + " This PDF is made without searchable text.") }
+                  }
+                }
+                DocTools.keepPage(ctx, b)
               }
             }
             withContext(Dispatchers.Main) { busy = "Making the PDF…" }
@@ -474,15 +600,15 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
           val fits: Boolean
           val previewImg = sourcePages.firstOrNull()?.let { DocTools.thumbnail(it, 600)?.asImageBitmap() } ?: chosen.firstOrNull()?.thumb
           try {
-            if (original != null && maxBytes != null && original.length() <= maxBytes) {
+            if (original != null && maxBytes != null && original.length() <= maxBytes && !ocr) {
               // already small enough: kept as it is (text stays text)
               original.copyTo(out, overwrite = true)
               size = out.length()
               fits = true
               notesOut = "This PDF is already under ${kb} KB: it is kept as it was."
             } else {
-              val (written, _, ok) = DocTools.fitPdf(sourcePages, maxBytes, out)
-              if (original != null && written >= original.length()) {
+              val (written, _, ok) = DocTools.fitPdf(sourcePages, maxBytes, out, words)
+              if (original != null && written >= original.length() && !ocr) {
                 // pictures would only make it heavier: the original is kept
                 original.copyTo(out, overwrite = true)
                 size = out.length()
@@ -504,10 +630,19 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
             notesOut?.let { n -> notes.add(n) }
           }
           FilesResult(
-            listOf(ReadyFile(out, name, "application/pdf")),
+            listOf(ReadyFile(out, name, "application/pdf", kb, itemIndex = itemPos)),
             previewImg,
             size, size, kb, fits, if (m == PdfMode.ID_CARD) 1 else chosen.size, OutputFormat.PDF, before,
           )
+        }
+        // made for a student: what the first page says about them (offered, never filled in)
+        if (studentId != null && m != PdfMode.ID_CARD && chosen.isNotEmpty()) {
+          if (texts.isEmpty()) busy = "Looking for the name and numbers…"
+          try {
+            facts = Ocr.facts(texts) { chosen[0].rendered(ctx, edits[0], Ocr.MAX_SIDE) }
+          } catch (_: OcrNotReady) {
+            noteOnce(Ocr.NOT_READY)
+          }
         }
       } catch (e: Throwable) {
         error = messageOf(e, "The PDF could not be made.")
@@ -516,13 +651,116 @@ class PdfToolsViewModel(app: Application, startMode: PdfMode = PdfMode.MERGE) : 
       }
     }
   }
+
+  /** A note shown once (making again does not repeat it) */
+  private fun noteOnce(n: String) {
+    if (n !in notes) notes.add(n)
+  }
+
+  // ---- autosave: "Continue where you left off?" (PDF tools and Split by preset each keep one)
+  private val draftTool = if (startMode == PdfMode.SPLIT) "split" else "pdf"
+  private val draftTitle = listOfNotNull(
+    if (startMode == PdfMode.SPLIT) "Split by preset" else "PDF tools",
+    forItem?.title,
+    app.docReady.students.get(studentId)?.name?.let { "for $it" },
+  ).joinToString(" · ")
+
+  val draft = DraftHost(viewModelScope, app.docReady.drafts, DraftRepository.keyOf(draftTool, presetId, itemIndex, studentId), { snapshot() }) { d -> restore(d) }
+
+  private fun snapshot(): Draft? {
+    val list = pages.filter { it.source != null }
+    if (list.isEmpty()) return null
+    val splitPreset = split.preset
+    val title = if (draftTool == "split" && splitPreset != null) "$draftTitle · ${splitPreset.name}" else draftTitle
+    return Draft(
+      draft.key, draftTool, title, presetId, itemIndex, studentId,
+      list.map { p ->
+        DraftPage(
+          p.source!!.path,
+          pdfPage = p.pdfPage,
+          from = p.from,
+          sourceBytes = p.sourceBytes,
+          recipe = recipes[p] ?: PageRecipe.Plain,
+          item = split.assigned[p],
+        )
+      },
+      listOfNotNull(
+        "mode" to (if (mode == PdfMode.ID_CARD) PdfMode.MERGE else mode).name,
+        "maxKb" to maxKbText,
+        "searchable" to searchable.toString(),
+        splitPreset?.let { "splitPreset" to it.id },
+        firstName?.let { "firstName" to it },
+      ).toMap(),
+      split.crops.map { (i, b) -> DraftCut(i, listOf(b.left, b.top, b.right, b.bottom)) },
+    )
+  }
+
+  private suspend fun restore(d: Draft): Boolean {
+    val v = d.values
+    v["mode"]?.let { m -> PdfMode.entries.firstOrNull { it.name == m }?.let { mode = it } }
+    v["maxKb"]?.let { maxKbText = it }
+    v["searchable"]?.toBooleanStrictOrNull()?.let { searchable = it }
+    v["firstName"]?.let { if (firstName == null) firstName = it }
+    busy = "Opening your pages…"
+    try {
+      val back = mutableListOf<Pair<PdfPage, DraftPage>>()
+      for ((n, dp) in d.pages.withIndex()) {
+        if (d.pages.size > 3) busy = "Opening your pages (${n + 1} of ${d.pages.size})…"
+        val src = File(dp.file)
+        val page = withContext(Dispatchers.Default) {
+          val bare = PdfPage(null, dp.from, dp.sourceBytes, src, dp.pdfPage)
+          PdfPage(listThumb(bare.rendered(ctx, dp.recipe, 400)), dp.from, dp.sourceBytes, src, dp.pdfPage)
+        }
+        recipes[page] = dp.recipe
+        back.add(page to dp)
+      }
+      pages.addAll(0, back.map { it.first })
+      filesAdded += back.map { it.second.file }.distinct().size
+      singlePdf = null
+      result = null
+      val splitPreset = app().docReady.presets.get(v["splitPreset"])
+      split.restore(
+        splitPreset,
+        back.mapNotNull { (p, dp) -> dp.item?.let { p to it } }.toMap(),
+        d.cuts.filter { it.box.size == 4 }.associate { it.item to NormBox(it.box[0], it.box[1], it.box[2], it.box[3]) },
+        pages,
+      )
+      split.onPagesChanged(pages)
+      return true
+    } catch (e: Throwable) {
+      error = messageOf(e, "The unfinished pages could not be opened.") + " The draft is kept as it was."
+      return false
+    } finally {
+      busy = null
+    }
+  }
+
+  override fun onCleared() {
+    draft.flush()
+    super.onCleared()
+  }
+
+  private fun app(): Application = getApplication()
+
+  init {
+    split.onSaved = { draft.done() }
+    draft.begin(resume)
+  }
 }
 
 @Composable
-fun PdfToolsScreen(onBack: () -> Unit, startMode: PdfMode = PdfMode.MERGE, onNewPreset: () -> Unit = {}) {
+fun PdfToolsScreen(
+  onBack: () -> Unit,
+  startMode: PdfMode = PdfMode.MERGE,
+  onNewPreset: () -> Unit = {},
+  presetId: String? = null,
+  itemIndex: Int = -1,
+  studentId: String? = null,
+  resume: Boolean = false,
+) {
   val context = LocalContext.current
   val app = context.applicationContext as Application
-  val vm: PdfToolsViewModel = viewModel { PdfToolsViewModel(app, startMode) }
+  val vm: PdfToolsViewModel = viewModel { PdfToolsViewModel(app, startMode, presetId, itemIndex, studentId, resume) }
   // the shared page editor takes the whole screen while it is open
   vm.editor?.let {
     PageEditorScreen(it)
@@ -570,6 +808,7 @@ fun PdfToolsScreen(onBack: () -> Unit, startMode: PdfMode = PdfMode.MERGE, onNew
     }
   }
 
+  DraftOffer(vm.draft)
   Scaffold(
     topBar = {
       if (vm.mode == PdfMode.SPLIT) {
@@ -592,7 +831,14 @@ fun PdfToolsScreen(onBack: () -> Unit, startMode: PdfMode = PdfMode.MERGE, onNew
             }
           } else {
             OutlinedButton(onClick = { vm.result = null }, enabled = vm.busy == null, modifier = Modifier.height(52.dp)) { Text("Change") }
-            Button(onClick = { saving = true }, enabled = vm.busy == null, modifier = Modifier.weight(1f).height(52.dp)) { Text("Save or share") }
+            if (studentId != null) {
+              AddToStudentButton(studentId, vm.result?.files?.takeIf { vm.busy == null }, vm.preset, Modifier.weight(1f)) {
+                vm.draft.done()
+                onBack()
+              }
+            } else {
+              Button(onClick = { saving = true }, enabled = vm.busy == null, modifier = Modifier.weight(1f).height(52.dp)) { Text("Save or share") }
+            }
           }
         }
       }
@@ -636,6 +882,7 @@ fun PdfToolsScreen(onBack: () -> Unit, startMode: PdfMode = PdfMode.MERGE, onNew
           }
         }
       }
+      vm.anim?.let { ScanAnimationCard(it, Modifier.padding(top = 12.dp)) }
       // what is happening / what went wrong: near the top, where it is seen
       if (vm.busy != null) BusyRow(vm.busy ?: "")
       ErrorText(vm.error)
@@ -653,6 +900,7 @@ fun PdfToolsScreen(onBack: () -> Unit, startMode: PdfMode = PdfMode.MERGE, onNew
         VSpace(12)
         FilesResultCard(result)
         Text(result.files[0].name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+        if (studentId != null) FactChips(studentId, vm.facts)
       } else if (vm.mode == PdfMode.SPLIT) {
         SplitTool(
           vm.split,
@@ -663,6 +911,7 @@ fun PdfToolsScreen(onBack: () -> Unit, startMode: PdfMode = PdfMode.MERGE, onNew
           onNewPreset = onNewPreset,
           onStartAgain = { vm.clear() },
           onEdit = { vm.openEditor(it) },
+          duplicates = vm.duplicates,
         )
       } else if (vm.mode == PdfMode.ID_CARD) {
         IdCardTool(vm, startCardScan, { pickFront.launch("image/*") }, { pickBack.launch("image/*") })
@@ -674,12 +923,12 @@ fun PdfToolsScreen(onBack: () -> Unit, startMode: PdfMode = PdfMode.MERGE, onNew
 
   val r = vm.result
   if (saving && r != null) {
-    SaveSheet(r.files, defaultFolder = "DocReady", onDismiss = { saving = false })
+    SaveSheet(r.files, defaultFolder = "DocReady", onDismiss = { saving = false }, onSaved = { vm.draft.done() })
   }
   val splitFiles = vm.split.allFiles()
   if (savingSplit && splitFiles.isNotEmpty()) {
     // every item's file in one folder, named after the preset
-    SaveSheet(splitFiles, defaultFolder = vm.split.preset?.name ?: "DocReady", onDismiss = { savingSplit = false })
+    SaveSheet(splitFiles, defaultFolder = vm.split.preset?.name ?: "DocReady", onDismiss = { savingSplit = false }, naming = presetNaming(vm.split.preset), onSaved = { vm.draft.done() })
   }
 }
 
@@ -691,7 +940,7 @@ private fun PagesTool(vm: PdfToolsViewModel, addFiles: () -> Unit) {
         "at lower quality and size until the PDF fits."
     } else {
       "Add PDFs and photos, put the pages in order, remove what is not needed, then make one PDF. " +
-        "Pages are saved as pictures (text in them can't be selected)."
+        "Pages are saved as pictures; turn on Searchable PDF to keep their English text selectable."
     },
     style = MaterialTheme.typography.bodyMedium,
     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -711,6 +960,8 @@ private fun PagesTool(vm: PdfToolsViewModel, addFiles: () -> Unit) {
   }
   if (vm.pages.isNotEmpty()) {
     SectionLabel("${vm.pages.size} page${if (vm.pages.size == 1) "" else "s"}")
+    DuplicatesBar(vm.duplicates, enabled = vm.busy == null)
+    val sameAs = vm.duplicates.sameAs
     vm.pages.forEachIndexed { i, p ->
       Surface(
         shape = RoundedCornerShape(12.dp),
@@ -724,6 +975,11 @@ private fun PagesTool(vm: PdfToolsViewModel, addFiles: () -> Unit) {
           Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
             Text("Page ${i + 1}", style = MaterialTheme.typography.bodyLarge)
             Text(p.from, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            vm.recipes[p]?.beautyBadge()?.let { BeautyBadge(it) }
+            sameAs.getOrNull(i)?.let { DuplicateBadge(it) }
+            vm.recipes[p]?.takeIf { !it.fingers && it.fingerBoxes.isNotEmpty() }?.let {
+              TextButton(onClick = { vm.setFingers(p, true) }, enabled = vm.busy == null) { Text("Fingers found — remove?") }
+            }
           }
           // (pages being added rely on the list's positions: no change meanwhile)
           IconButton(onClick = { vm.move(i, -1) }, enabled = vm.busy == null && i > 0) { Icon(AppIcons.Up, contentDescription = "Move up") }
@@ -732,6 +988,10 @@ private fun PagesTool(vm: PdfToolsViewModel, addFiles: () -> Unit) {
           IconButton(onClick = { vm.remove(i) }, enabled = vm.busy == null) { Icon(AppIcons.Delete, contentDescription = "Remove page") }
         }
       }
+    }
+    SearchableSwitch(vm.searchable) {
+      vm.searchable = it
+      vm.result = null
     }
     SectionLabel("Size limit")
     NumberField(

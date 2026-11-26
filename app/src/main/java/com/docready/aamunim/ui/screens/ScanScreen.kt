@@ -1,5 +1,10 @@
 package com.docready.aamunim.ui.screens
 
+import kotlinx.coroutines.delay
+import com.docready.aamunim.ui.components.animationsEnabled
+import com.docready.aamunim.ui.components.ScanAnimationCard
+import com.docready.aamunim.ui.components.ScanAnim
+import com.docready.aamunim.data.model.beautyBadge
 import android.app.Activity
 import android.app.Application
 import android.content.ActivityNotFoundException
@@ -54,6 +59,17 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.docready.aamunim.data.FileNames
+import com.docready.aamunim.data.Draft
+import com.docready.aamunim.data.DraftHost
+import com.docready.aamunim.data.DraftPage
+import com.docready.aamunim.data.DraftRepository
+import com.docready.aamunim.data.model.title
+import com.docready.aamunim.ui.components.DraftOffer
+import com.docready.aamunim.ui.components.DuplicateBadge
+import com.docready.aamunim.ui.components.Duplicates
+import com.docready.aamunim.ui.components.DuplicatesBar
+import com.docready.aamunim.ui.components.FactChips
+import com.docready.aamunim.ui.components.SearchableSwitch
 import com.docready.aamunim.data.model.ItemKind
 import com.docready.aamunim.data.model.OutputFormat
 import com.docready.aamunim.data.model.PageRecipe
@@ -67,8 +83,14 @@ import com.docready.aamunim.data.model.bytesText
 import com.docready.aamunim.docReady
 import com.docready.aamunim.imaging.DocTools
 import com.docready.aamunim.imaging.PdfTools
+import com.docready.aamunim.imaging.Fact
+import com.docready.aamunim.imaging.Ocr
+import com.docready.aamunim.imaging.OcrWord
+import com.docready.aamunim.imaging.OcrNotReady
+import com.docready.aamunim.ui.components.NotesList
 import com.docready.aamunim.imaging.Scanner
 import com.docready.aamunim.save.ReadyFile
+import com.docready.aamunim.ui.components.BeautyBadge
 import com.docready.aamunim.ui.components.AppIcons
 import com.docready.aamunim.ui.components.BottomActions
 import com.docready.aamunim.ui.components.BusyRow
@@ -113,15 +135,29 @@ class Page(
   val checkCorners: Boolean = false,
 )
 
-class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : AndroidViewModel(app) {
+class ScanViewModel(app: Application, private val presetId: String?, private val itemIndex: Int, private val studentId: String? = null, resume: Boolean = false) : AndroidViewModel(app) {
   private val ctx: Application get() = getApplication()
   val preset = app.docReady.presets.get(presetId)
   private val item = preset?.items?.getOrNull(itemIndex)?.takeIf { it.kind == ItemKind.DOCUMENT }
     ?: preset?.items?.firstOrNull { it.kind == ItemKind.DOCUMENT }
 
+  /** The item's place in its preset (a student's checklist), or null */
+  val itemPos: Int? = item?.let { preset?.items?.indexOf(it) }?.takeIf { it >= 0 }
+
   val pages = mutableStateListOf<Page>()
   var format by mutableStateOf(if (item?.format == OutputFormat.JPG) OutputFormat.JPG else OutputFormat.PDF)
   var maxKbText by mutableStateOf(item?.maxKb?.toString() ?: "")
+
+  /** A searchable PDF: the pages' English text (OCR) as an invisible layer */
+  var searchable by mutableStateOf(false)
+
+  /** Text reading was not ready (the model still downloading): what was done instead */
+  var ocrNote by mutableStateOf<String?>(null)
+    private set
+
+  /** What the pages say about the student (name, roll…), offered as chips after making */
+  var facts by mutableStateOf<List<Fact>>(emptyList())
+    private set
 
   /** The limits of a preset's document item, picked on this screen */
   fun applyItem(it: PresetItem) {
@@ -132,6 +168,11 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
   var busy by mutableStateOf<String?>(null)
   var result by mutableStateOf<FilesResult?>(null)
   var error by mutableStateOf<String?>(null)
+
+  /** The page being cleaned right now, for the scanning animation (null = none) */
+  var anim by mutableStateOf<ScanAnim?>(null)
+    private set
+  private var animKey = 0
 
   /** The scanner's pages, copied in (they are added after the pages already there) */
   fun addScanned(uris: List<Uri>) = addPages(uris, photos = false)
@@ -145,10 +186,18 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
       busy = "Reading the pages…"
       error = null
       result = null
+      val list = uris.take(30)
+      val animated = animationsEnabled(ctx)
       try {
-        for (u in uris.take(30)) {
-          val page = withContext(Dispatchers.Default) {
-            val f = FileNames.copyIn(ctx, u, if (photos) "img" else "jpg")
+        for ((n, u) in list.withIndex()) {
+          // the raw page first: the scanning animation sweeps over it while it is cleaned
+          val (f, raw) = withContext(Dispatchers.Default) {
+            val file = FileNames.copyIn(ctx, u, if (photos) "img" else "jpg")
+            file to DocTools.load(ctx, Uri.fromFile(file), PREVIEW).asImageBitmap()
+          }
+          val label = if (list.size == 1) "Cleaning the page…" else "Cleaning page ${n + 1} of ${list.size}…"
+          anim = ScanAnim(animKey++, raw, null, label)
+          val (page, cleaned) = withContext(Dispatchers.Default) {
             val quad = if (photos) {
               val b = DocTools.load(ctx, Uri.fromFile(f), 1600)
               try {
@@ -159,16 +208,48 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
             } else {
               null
             }
-            // new document pages: shadows removed, colour evened (and the paper's corners on a photo)
-            val recipe = PageRecipe.Document.copy(quad = quad?.toList())
-            Page(f, pageThumb(f, recipe), recipe, qualityWarning(f), checkCorners = photos)
+            // new document pages: Magic (and the paper's corners on a photo)
+            val framed = PageRecipe.Document.copy(quad = quad?.toList())
+            // fingers holding the paper: painted out by default where found (never over a face)
+            val recipe = PageRenderer.withFingers(framed, fingersOn(f, framed))
+            // the real result, small: the animation's reveal and the page's tile
+            val shown = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), PREVIEW), recipe)
+            val tile = DocTools.scaleToMax(shown.copy(Bitmap.Config.ARGB_8888, false), 240).asImageBitmap()
+            Page(f, tile, recipe, qualityWarning(f), checkCorners = photos) to shown.asImageBitmap()
           }
           pages.add(page)
+          anim = anim?.copy(after = cleaned, done = true, label = if (list.size == 1) "Page ready" else "Page ${n + 1} of ${list.size} ready")
+          // (a moment to see the reveal and the tick; none when animations are off)
+          // (only short batches and the last page pause: never slowing a long scan down)
+          if (animated && (list.size <= 3 || n == list.size - 1)) delay(650)
         }
       } catch (e: Throwable) {
         error = messageOf(e, "The pages could not be read.")
       } finally {
         busy = null
+        anim = null
+      }
+    }
+  }
+
+  /** Fingers found on the page as it will be framed (a failure finds none) */
+  private fun fingersOn(f: File, r: PageRecipe): PageRenderer.FingerFind? = try {
+    PageRenderer.findFingers(DocTools.load(ctx, Uri.fromFile(f), 1600), r)
+  } catch (_: Throwable) {
+    null
+  }
+
+  /** "Fingers found — remove?" answered on the page's tile: painted over (or left) */
+  fun setFingers(page: Page, on: Boolean) {
+    val r = page.recipe.copy(fingers = on)
+    result = null
+    viewModelScope.launch {
+      try {
+        val thumb = withContext(Dispatchers.Default) { pageThumb(page.file, r) }
+        val at = pages.indexOf(page)
+        if (at >= 0) pages[at] = Page(page.file, thumb, r, page.warning, page.checkCorners)
+      } catch (e: Throwable) {
+        error = messageOf(e, "The page could not be updated.")
       }
     }
   }
@@ -192,11 +273,15 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
     return DocTools.scaleToMax(b, 240).asImageBitmap()
   }
 
-  /** A page made from its picture and its edits, A4 at 150 dpi at most */
-  private fun prepared(p: Page): Bitmap {
-    val big = p.recipe.quad != null
-    val b = DocTools.load(ctx, Uri.fromFile(p.file), if (big) 2600 else PdfTools.PAGE_LONG_SIDE)
-    return DocTools.scaleToMax(PageRenderer.render(b, p.recipe), PdfTools.PAGE_LONG_SIDE)
+  /**
+   * A page made from its picture and its edits at full detail (up to 3000 px, about 250 dpi on
+   * A4; a phone short of memory gets 2400, then 1754). A KB limit makes it smaller later, only
+   * as far as needed.
+   */
+  private fun prepared(p: Page): Bitmap = PdfTools.atBestSize { side ->
+    // (straightening from corners takes a little more of the photo than the page it gives)
+    val b = DocTools.load(ctx, Uri.fromFile(p.file), if (p.recipe.quad != null) side + 600 else side)
+    DocTools.scaleToMax(PageRenderer.render(b, p.recipe, side), side)
   }
 
   // ---- the shared page editor (all pages, starting at one)
@@ -213,6 +298,7 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
       EditorMode.DOCUMENT,
       onDone = { recipes -> applyRecipes(list, recipes) },
       onClose = { editor = null },
+      animate = animationsEnabled(ctx),
     )
   }
 
@@ -241,7 +327,11 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
   fun remove(page: Page) {
     pages.remove(page)
     result = null
+    duplicates.forgetUndo()
   }
+
+  /** Pages that look like an earlier page (the same paper scanned twice) */
+  val duplicates = Duplicates(viewModelScope, pages, { it.thumb }, changed = { result = null })
 
   fun make() {
     val kb = maxKbText.toIntOrNull()
@@ -252,27 +342,48 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
     if (pages.isEmpty()) return
     val files = pages.toList()
     val asPdf = format == OutputFormat.PDF
+    val ocr = asPdf && searchable
     viewModelScope.launch {
       busy = if (asPdf) "Making the PDF…" else "Making the pictures…"
       error = null
+      facts = emptyList()
+      ocrNote = null
+      val texts = ArrayList<String>()
       try {
         result = withContext(Dispatchers.Default) {
           val maxBytes = kb?.let { it * 1024L }
           if (asPdf) {
-            // one page in memory at a time: cleaned, then kept as a file
-            val cleaned = files.map { f ->
-              DocTools.keepPage(ctx, prepared(f))
+            // one page in memory at a time: cleaned, (read,) then kept as a file
+            var words = if (ocr) ArrayList<List<OcrWord>>() else null
+            val cleaned = files.mapIndexed { i, f ->
+              val b = prepared(f)
+              val list = words
+              if (list != null) {
+                withContext(Dispatchers.Main) { busy = "Reading the text of page ${i + 1} of ${files.size}…" }
+                try {
+                  val read = Ocr.read(b)
+                  list.add(read.words)
+                  texts.add(read.text)
+                } catch (_: OcrNotReady) {
+                  // the text model is still coming: a plain PDF this time
+                  words = null
+                  texts.clear()
+                  withContext(Dispatchers.Main) { ocrNote = Ocr.NOT_READY + " This PDF is made without searchable text." }
+                }
+              }
+              DocTools.keepPage(ctx, b)
             }
+            if (words != null) withContext(Dispatchers.Main) { busy = "Making the PDF…" }
             val name = if (files.size == 1) "scan_1_page.pdf" else "scan_${files.size}_pages.pdf"
             val out = FileNames.outputFile(ctx, name)
             val previewImg = DocTools.thumbnail(cleaned[0], 600)?.asImageBitmap()
             val (size, _, fits) = try {
-              DocTools.fitPdf(cleaned, maxBytes, out)
+              DocTools.fitPdf(cleaned, maxBytes, out, words)
             } finally {
               cleaned.forEach { it.delete() } // (in the PDF now)
             }
             FilesResult(
-              listOf(ReadyFile(out, name, "application/pdf")),
+              listOf(ReadyFile(out, name, "application/pdf", kb, itemIndex = itemPos)),
               previewImg,
               size, size, kb, fits, files.size, OutputFormat.PDF,
             )
@@ -287,7 +398,7 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
               val name = if (files.size == 1) "scan.jpg" else "scan_page-${i + 1}.jpg"
               val out = FileNames.outputFile(ctx, name)
               out.writeBytes(fit.bytes)
-              ready.add(ReadyFile(out, name, "image/jpeg"))
+              ready.add(ReadyFile(out, name, "image/jpeg", kb, itemIndex = itemPos))
               allFit = allFit && fit.fits
               total += fit.bytes.size
               largest = maxOf(largest, fit.bytes.size.toLong())
@@ -298,6 +409,15 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
             )
           }
         }
+        // made for a student: what the first page says about them (offered, never filled in)
+        if (studentId != null) {
+          if (texts.isEmpty()) busy = "Looking for the name and numbers…"
+          try {
+            facts = Ocr.facts(texts) { prepared(files[0]) }
+          } catch (_: OcrNotReady) {
+            if (ocrNote == null) ocrNote = Ocr.NOT_READY
+          }
+        }
       } catch (e: Throwable) {
         error = messageOf(e, "The document could not be made.")
       } finally {
@@ -306,8 +426,61 @@ class ScanViewModel(app: Application, presetId: String?, itemIndex: Int) : Andro
     }
   }
 
+
   fun clearResult() {
     result = null
+  }
+
+  // ---- autosave: "Continue where you left off?"
+  private val draftTitle = listOfNotNull(
+    "Scan",
+    item?.title,
+    app.docReady.students.get(studentId)?.name?.let { "for $it" },
+  ).joinToString(" · ")
+
+  val draft = DraftHost(viewModelScope, app.docReady.drafts, DraftRepository.keyOf("scan", presetId, itemIndex, studentId), { snapshot() }) { d -> restore(d) }
+
+  private fun snapshot(): Draft? {
+    val list = pages.toList()
+    if (list.isEmpty()) return null
+    return Draft(
+      draft.key, "scan", draftTitle, presetId, itemIndex, studentId,
+      list.map { DraftPage(it.file.path, recipe = it.recipe, warning = it.warning, checkCorners = it.checkCorners) },
+      mapOf("format" to format.name, "maxKb" to maxKbText, "searchable" to searchable.toString()),
+    )
+  }
+
+  private suspend fun restore(d: Draft): Boolean {
+    d.values["format"]?.let { f -> OutputFormat.entries.firstOrNull { it.name == f }?.let { format = it } }
+    d.values["maxKb"]?.let { maxKbText = it }
+    d.values["searchable"]?.toBooleanStrictOrNull()?.let { searchable = it }
+    busy = "Opening your pages…"
+    try {
+      val back = withContext(Dispatchers.Default) {
+        d.pages.map { p ->
+          val f = File(p.file)
+          Page(f, pageThumb(f, p.recipe), p.recipe, p.warning, p.checkCorners)
+        }
+      }
+      // (before any pages added meanwhile)
+      pages.addAll(0, back)
+      result = null
+      return true
+    } catch (e: Throwable) {
+      error = messageOf(e, "The unfinished pages could not be opened.") + " The draft is kept as it was."
+      return false
+    } finally {
+      busy = null
+    }
+  }
+
+  init {
+    draft.begin(resume)
+  }
+
+  override fun onCleared() {
+    draft.flush()
+    super.onCleared()
   }
 }
 
@@ -333,10 +506,10 @@ fun FilesResultCard(r: FilesResult) {
 }
 
 @Composable
-fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}) {
+fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPreset: () -> Unit = {}, studentId: String? = null, resume: Boolean = false) {
   val context = LocalContext.current
   val app = context.applicationContext as Application
-  val vm: ScanViewModel = viewModel { ScanViewModel(app, presetId, itemIndex) }
+  val vm: ScanViewModel = viewModel { ScanViewModel(app, presetId, itemIndex, studentId, resume) }
   var saving by rememberSaveable { mutableStateOf(false) }
   // the shared page editor takes the whole screen while it is open
   vm.editor?.let {
@@ -372,6 +545,7 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
     }
   }
 
+  DraftOffer(vm.draft)
   Scaffold(
     topBar = { DocTopBar("Scan document", onBack, subtitle = vm.preset?.let { "Preset: ${it.name}" } ?: "Certificates, marksheets") },
     bottomBar = {
@@ -383,8 +557,15 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
             }
           } else {
             OutlinedButton(onClick = { vm.clearResult() }, enabled = vm.busy == null, modifier = Modifier.height(52.dp)) { Text("Change") }
-            Button(onClick = { saving = true }, enabled = vm.busy == null, modifier = Modifier.weight(1f).height(52.dp)) {
-              Text("Save or share")
+            if (studentId != null) {
+              AddToStudentButton(studentId, vm.result?.files?.takeIf { vm.busy == null }, vm.preset, Modifier.weight(1f)) {
+                vm.draft.done()
+                onBack()
+              }
+            } else {
+              Button(onClick = { saving = true }, enabled = vm.busy == null, modifier = Modifier.weight(1f).height(52.dp)) {
+                Text("Save or share")
+              }
             }
           }
         }
@@ -401,6 +582,9 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
         .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
       val result = vm.result
+      vm.anim?.let {
+        ScanAnimationCard(it, Modifier.padding(bottom = 12.dp))
+      }
       if (vm.pages.isEmpty()) {
         Text(
           "Google's scanner finds the page edges, straightens them and removes shadows. " +
@@ -437,11 +621,15 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
         for (f in result.files) {
           Text(f.name + " · " + bytesText(f.file.length()), style = MaterialTheme.typography.bodySmall)
         }
+        if (studentId != null) FactChips(studentId, vm.facts)
+        vm.ocrNote?.let { NotesList(listOf(it), Modifier.padding(top = 8.dp)) }
       } else {
         Row(verticalAlignment = Alignment.CenterVertically) {
           SectionLabel("${vm.pages.size} page${if (vm.pages.size == 1) "" else "s"} · tap a page to edit it", Modifier.weight(1f))
           TextButton(onClick = { vm.openEditor(0) }, enabled = vm.busy == null) { Text("Edit all pages") }
         }
+        DuplicatesBar(vm.duplicates, enabled = vm.busy == null)
+        val sameAs = vm.duplicates.sameAs
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           vm.pages.forEachIndexed { i, p ->
             Column(Modifier.width(104.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -458,7 +646,13 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
                 p.thumb?.let { Image(it, contentDescription = "Page ${i + 1}", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()) }
               }
               Text("${i + 1}", style = MaterialTheme.typography.labelSmall)
+              sameAs.getOrNull(i)?.let { DuplicateBadge(it) }
               p.warning?.let { PageNote(it) }
+              p.recipe.beautyBadge()?.let { BeautyBadge(it) }
+              if (!p.recipe.fingers && p.recipe.fingerBoxes.isNotEmpty()) {
+                PageNote("Fingers found — remove?")
+                TextButton(onClick = { vm.setFingers(p, true) }, enabled = vm.busy == null) { Text("Remove", style = MaterialTheme.typography.labelSmall) }
+              }
               if (p.checkCorners) PageNote("Check the corners")
               OutlinedButton(onClick = { vm.remove(p) }, enabled = vm.busy == null, modifier = Modifier.height(32.dp)) {
                 Text("Remove", style = MaterialTheme.typography.labelSmall)
@@ -484,6 +678,7 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           modifier = Modifier.padding(top = 8.dp),
         )
+        if (vm.format == OutputFormat.PDF) SearchableSwitch(vm.searchable) { vm.searchable = it }
         if (vm.preset == null) PresetItemShortcut(ItemKind.DOCUMENT, { _, item -> vm.applyItem(item) }, onNewPreset)
         SectionLabel("Size limit")
         NumberField(
@@ -500,7 +695,7 @@ fun ScanScreen(presetId: String?, itemIndex: Int, onBack: () -> Unit, onNewPrese
 
   val r = vm.result
   if (saving && r != null) {
-    SaveSheet(r.files, defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { saving = false })
+    SaveSheet(r.files, defaultFolder = vm.preset?.name ?: "DocReady", onDismiss = { saving = false }, naming = presetNaming(vm.preset), onSaved = { vm.draft.done() })
   }
 }
 
@@ -515,3 +710,5 @@ private fun PageNote(text: String) {
   )
 }
 
+/** The animation's page pictures: about a phone screen's width */
+private const val PREVIEW = 900

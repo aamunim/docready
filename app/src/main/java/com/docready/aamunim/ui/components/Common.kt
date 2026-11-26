@@ -237,3 +237,16 @@ fun Badge(text: String, modifier: Modifier = Modifier) {
 
 @Composable
 fun VSpace(h: Int) = Spacer(Modifier.height(h.dp))
+
+/** "✨ shadow · yellow · fold": what Beautify did on a page, under its tile */
+@Composable
+fun BeautyBadge(text: String, modifier: Modifier = Modifier) {
+  Text(
+    text,
+    style = MaterialTheme.typography.labelSmall,
+    color = MaterialTheme.colorScheme.primary,
+    maxLines = 2,
+    overflow = TextOverflow.Ellipsis,
+    modifier = modifier.padding(top = 2.dp),
+  )
+}

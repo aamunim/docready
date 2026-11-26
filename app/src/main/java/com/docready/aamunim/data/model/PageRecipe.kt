@@ -6,6 +6,12 @@ import kotlinx.serialization.Serializable
 @Serializable
 enum class Look(val title: String) {
   ORIGINAL("Original"),
+  /** Scanner-app clean: shadows, folds and tint gone, crisp dark text on white, colours natural */
+  MAGIC("Magic"),
+  /** Smooth black & white with soft edges */
+  MAGIC_BW("Magic B&W"),
+  /** Brighter, even paper, natural colours */
+  LIGHTEN("Lighten"),
   AUTO("Auto color"),
   GREY("Grey"),
   BW("B&W"),
@@ -30,7 +36,8 @@ data class EraseStroke(val points: List<Float>, val radius: Float, val white: Bo
 
 /**
  * What was done to a page, kept apart from the page itself (the source is never changed):
- * corners → quarter turns → fine rotation → crop box → shadows / look / light → erasing.
+ * corners → quarter turns → fine rotation → Beautify's straightening / border → crop box →
+ * Beautify's clean-up → shadows / look / light → erasing.
  * The preview and the full-quality page are both made from the source with it.
  */
 @Serializable
@@ -48,6 +55,20 @@ data class PageRecipe(
   /** -0.5 to 1 */
   val contrast: Float = 0f,
   val erase: List<EraseStroke> = emptyList(),
+  /** ✨ Beautify (bad paper): null = never used on this page */
+  val beautify: BeautifyRecipe? = null,
+  /**
+   * Fingers holding the paper painted out with the paper's colour (found again on the page as
+   * it is framed, at any size). On by default only where fingers were found on a scanned page.
+   */
+  val fingers: Boolean = false,
+  /**
+   * The fingers found and approved, as parts of the framed page before the crop box (after the
+   * corners, turns and Beautify's framing): only these are painted over, at any size. Empty in
+   * recipes from before (their fingers are found again, photos and stamps left out).
+   * Not empty with [fingers] off: found but not turned on (offered: "Fingers found — remove?").
+   */
+  val fingerBoxes: List<CropRect> = emptyList(),
 ) {
   val isPlain: Boolean get() = this == Plain
 
@@ -58,7 +79,10 @@ data class PageRecipe(
   companion object {
     val Plain = PageRecipe()
 
-    /** A new document page: shadows removed, colour evened */
-    val Document = PageRecipe(look = Look.AUTO, removeShadows = true)
+    /**
+     * A new document page from the camera or the scanner: Magic (shadows, folds and the paper's
+     * tint removed by its own paper estimate, so "remove shadows" is not needed on top)
+     */
+    val Document = PageRecipe(look = Look.MAGIC)
   }
 }

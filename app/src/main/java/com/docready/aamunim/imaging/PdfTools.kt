@@ -19,8 +19,34 @@ import kotlin.math.roundToInt
  * go through the same pages-as-pictures path. All functions block: call them off the main thread.
  */
 object PdfTools {
-  /** A4's long side at 150 dpi */
+  /** A4's long side at 150 dpi (a PDF's page made on demand, the smallest fallback) */
   const val PAGE_LONG_SIDE = 1754
+
+  /**
+   * A document page's long side when there is no size limit to meet (about 250 dpi on A4):
+   * small print stays crisp. fitPdf / fitPicture only make it smaller when a KB limit needs it.
+   */
+  const val DOC_LONG_SIDE = 3000
+
+  /** Long documents: a little smaller per page (memory and work files stay bounded) */
+  const val LONG_DOC_SIDE = 2200
+
+  /**
+   * [make] at the largest of [sides] this phone's memory allows: an out-of-memory tries the next
+   * size down (3000 → 2400 → 1754 px by default).
+   */
+  fun <T> atBestSize(sides: List<Int> = listOf(DOC_LONG_SIDE, 2400, PAGE_LONG_SIDE), make: (Int) -> T): T {
+    var last: Throwable? = null
+    for (side in sides) {
+      try {
+        return make(side)
+      } catch (e: OutOfMemoryError) {
+        last = e
+        System.gc()
+      }
+    }
+    throw IllegalStateException("This page is too big for this phone's memory.", last)
+  }
 
   /** At most this many pages of one PDF are used (a note tells the user when there are more) */
   const val PAGE_LIMIT = 150

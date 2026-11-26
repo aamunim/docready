@@ -35,7 +35,7 @@ import com.docready.aamunim.ui.components.SectionLabel
  * on the phone without them.
  */
 @Composable
-fun AccountsScreen(onBack: () -> Unit) {
+fun AccountsScreen(onBack: () -> Unit, onFileNames: () -> Unit = {}) {
   val context = LocalContext.current
   val version = try {
     context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
@@ -69,6 +69,8 @@ fun AccountsScreen(onBack: () -> Unit) {
         text = "For ITTC staff: the institute's steps and sizes, a lead's folder, upload to the ITTC Drive, links for students.",
         button = "Sign in to ITTC",
       )
+      SectionLabel("Settings")
+      androidx.compose.material3.OutlinedButton(onClick = onFileNames, modifier = Modifier.fillMaxWidth()) { Text("File names") }
       SectionLabel("Privacy")
       Text(
         "Everything is made on this phone. This version has no internet access and no analytics: " +

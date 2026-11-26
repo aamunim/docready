@@ -110,4 +110,14 @@ dependencies {
     implementation(libs.mlkit.document.scanner)
     implementation(libs.mlkit.face.detection)
     implementation(libs.mlkit.subject.segmentation)
+    // OCR, English (Latin script), through Play services too: Play downloads the model when the
+    // app is installed (manifest DEPENDENCIES "ocr"), not bundled (that cost about 19 MB of APK)
+    implementation(libs.mlkit.text.recognition)
+    // presets as QR codes: ZXing makes them and reads them from pictures (plain Java, offline);
+    // the camera scan is Google's code scanner (its own screen: no camera permission in the app)
+    implementation(libs.zxing.core)
+    implementation(libs.code.scanner)
+
+    // plain JVM tests of the pure-Kotlin parts (./gradlew test); nothing of it goes in the app
+    testImplementation(libs.junit)
 }

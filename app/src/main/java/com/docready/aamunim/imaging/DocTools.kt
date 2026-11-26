@@ -383,14 +383,14 @@ object DocTools {
     return true
   }
 
-  fun warp(src: Bitmap, q: FloatArray): Bitmap {
+  fun warp(src: Bitmap, q: FloatArray, maxSide: Int = 2400): Bitmap {
     val W = src.width.toFloat()
     val H = src.height.toFloat()
     val px = FloatArray(8) { i -> q[i].coerceIn(0f, 1f) * if (i % 2 == 0) W else H }
     fun d(a: Int, b: Int) = sqrt(((px[a * 2] - px[b * 2]) * (px[a * 2] - px[b * 2]) + (px[a * 2 + 1] - px[b * 2 + 1]) * (px[a * 2 + 1] - px[b * 2 + 1])).toDouble()).toFloat()
     var ow = max(d(0, 1), d(3, 2))
     var oh = max(d(0, 3), d(1, 2))
-    val k = min(1f, 2400f / max(ow, oh))
+    val k = min(1f, maxSide.toFloat() / max(ow, oh))
     ow = max(1f, ow * k)
     oh = max(1f, oh * k)
     val dst = floatArrayOf(0f, 0f, ow, 0f, ow, oh, 0f, oh)
@@ -560,10 +560,10 @@ object DocTools {
    * A page straightened from its four corners (when they make a real shape) and turned by
    * 0 / 90 / 180 / 270 degrees. [src] is used up (recycled when a new picture is made).
    */
-  fun straighten(src: Bitmap, quad: FloatArray?, turn: Int): Bitmap {
+  fun straighten(src: Bitmap, quad: FloatArray?, turn: Int, maxSide: Int = 2400): Bitmap {
     var b = src
     if (quad != null && isConvex(quad)) {
-      val flat = warp(b, quad)
+      val flat = warp(b, quad, maxSide)
       b.recycle()
       b = flat
     }
@@ -662,7 +662,8 @@ object DocTools {
 
   // ------------------------------------------------------------------ PDF
 
-  data class Page(val jpeg: ByteArray, val width: Int, val height: Int)
+  /** A PDF page: its picture, and (searchable PDF) the words read on it, placed invisibly over it */
+  class Page(val jpeg: ByteArray, val width: Int, val height: Int, val words: List<OcrWord> = emptyList())
 
 
   /** Counts what is written, so the PDF's object offsets are known while it streams to a file */
@@ -687,11 +688,13 @@ object DocTools {
    * A PDF whose pages are the JPEGs themselves (/DCTDecode): its weight is the pictures'
    * weight plus about half a KB a page. Each page is A4 (landscape for a wide picture), the
    * picture filling it. Pages are asked for one at a time ([pageAt]) and written straight to
-   * [sink], so only one page's JPEG is in memory. Returns the bytes written.
+   * [sink], so only one page's JPEG is in memory. [searchable]: the pages' words are written as
+   * an invisible text layer (one shared font object at the end). Returns the bytes written.
    */
-  fun writePdf(sink: OutputStream, pageCount: Int, pageAt: (Int) -> Page): Long {
+  fun writePdf(sink: OutputStream, pageCount: Int, searchable: Boolean = false, pageAt: (Int) -> Page): Long {
     val out = CountingStream(sink)
-    val offsets = LongArray(2 + 3 * pageCount)
+    val fontNo = 3 + 3 * pageCount
+    val offsets = LongArray(2 + 3 * pageCount + (if (searchable) 1 else 0))
     fun w(s: String) = out.write(s.toByteArray(Charsets.ISO_8859_1))
     fun obj(n: Int, body: () -> Unit) {
       offsets[n - 1] = out.count
@@ -722,12 +725,17 @@ object DocTools {
       obj(pageNo) {
         w(
           "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 $pw $ph] " +
-            "/Resources << /XObject << /Im0 ${pageNo + 2} 0 R >> >> /Contents ${pageNo + 1} 0 R >>",
+            "/Resources << /XObject << /Im0 ${pageNo + 2} 0 R >>" + (if (searchable) " /Font << /F1 $fontNo 0 R >>" else "") +
+            " >> /Contents ${pageNo + 1} 0 R >>",
         )
       }
-      val content = String.format(java.util.Locale.US, "q %.2f 0 0 %.2f %.2f %.2f cm /Im0 Do Q", dw, dh, dx, dy)
+      val picture = String.format(java.util.Locale.US, "q %.2f 0 0 %.2f %.2f %.2f cm /Im0 Do Q", dw, dh, dx, dy)
+      val text = if (searchable) PdfText.layer(p.words, dw, dh, dx, dy) else ""
+      val content = (if (text.isEmpty()) picture else "$picture\n$text").toByteArray(Charsets.ISO_8859_1)
       obj(pageNo + 1) {
-        w("<< /Length ${content.length} >>\nstream\n$content\nendstream")
+        w("<< /Length ${content.size} >>\nstream\n")
+        out.write(content)
+        w("\nendstream")
       }
       obj(pageNo + 2) {
         w(
@@ -738,8 +746,9 @@ object DocTools {
         w("\nendstream")
       }
     }
+    if (searchable) obj(fontNo) { w(PdfText.FONT) }
     val xref = out.count
-    val total = 2 + 3 * n
+    val total = 2 + 3 * n + (if (searchable) 1 else 0)
     w("xref\n0 ${total + 1}\n0000000000 65535 f \n")
     for (i in 0 until total) w(String.format(java.util.Locale.US, "%010d 00000 n \n", offsets[i]))
     w("trailer\n<< /Size ${total + 1} /Root 1 0 R >>\nstartxref\n$xref\n%%EOF\n")
@@ -748,10 +757,10 @@ object DocTools {
   }
 
   /** A page file as a JPEG page at [quality], made [k] times smaller (one page in memory) */
-  private fun encodePage(f: File, quality: Int, k: Float): Page {
+  private fun encodePage(f: File, quality: Int, k: Float, words: List<OcrWord> = emptyList()): Page {
     var b = BitmapFactory.decodeFile(f.path) ?: throw IllegalStateException("A page could not be read.")
     if (k < 0.999f) b = scale(b, (b.width * k).roundToInt(), (b.height * k).roundToInt())
-    val p = Page(jpeg(b, quality), b.width, b.height)
+    val p = Page(jpeg(b, quality), b.width, b.height, words)
     b.recycle()
     return p
   }
@@ -768,10 +777,13 @@ object DocTools {
    * One quality for all pages; if the lowest readable quality is still too heavy, every page a
    * little smaller, down to about 100 dpi. Returns (bytes written, quality, fits).
    */
-  fun fitPdf(pages: List<File>, maxBytes: Long?, dest: File): Triple<Long, Int, Boolean> {
+  fun fitPdf(pages: List<File>, maxBytes: Long?, dest: File, words: List<List<OcrWord>>? = null): Triple<Long, Int, Boolean> {
     var k = 1.0f
-    val overhead = 600L * pages.size + 400
+    // (a searchable PDF's text layer: about 60 bytes a word, counted against the limit)
+    val textBytes = words?.sumOf { it.size * 60L + 20 } ?: 0L
+    var overhead = 600L * pages.size + 400 + textBytes
     val longest = pages.maxOf { longSideOf(it) }
+    var measured = false
     while (true) {
       val factor = k
       val totals = HashMap<Int, Long>()
@@ -780,10 +792,30 @@ object DocTools {
         totals.getOrPut(qq) { pages.sumOf { f -> encodePage(f, qq, factor).jpeg.size.toLong() } }
       }
       if (ok || longest * factor <= 1170f) {
-        val size = FileOutputStream(dest).buffered().use { s -> writePdf(s, pages.size) { i -> encodePage(pages[i], q, factor) } }
+        val size = FileOutputStream(dest).buffered().use { s ->
+          writePdf(s, pages.size, searchable = words != null) { i -> encodePage(pages[i], q, factor, words?.getOrNull(i) ?: emptyList()) }
+        }
+        val pictures = totals[q]
+        if (ok && maxBytes != null && size > maxBytes && !measured && pictures != null) {
+          // the estimate of the PDF's own weight (the text layer above all) was low: once more,
+          // with the real weight around the pictures as written
+          measured = true
+          overhead = size - pictures + 256
+          continue
+        }
         return Triple(size, q, ok && (maxBytes == null || size <= maxBytes))
       }
-      k *= 0.85f
+      // too heavy even at the lowest quality: the first step jumps near the size that fits (the
+      // weight goes with the area, so the scale with its square root), then 15 % steps as before;
+      // never below about 100 dpi, so the fit guarantee is unchanged
+      val atLowest = totals[MIN_QUALITY]
+      val jump = if (k == 1f && atLowest != null && budget != null && budget > 0 && atLowest > 0) {
+        (kotlin.math.sqrt(budget.toDouble() / atLowest) * 0.95).toFloat().coerceIn(0.3f, 0.85f)
+      } else {
+        0.85f
+      }
+      // (1169: the floor is always reached exactly, never a float hair above the exit check)
+      k = max(k * jump, 1169f / longest)
     }
   }
 

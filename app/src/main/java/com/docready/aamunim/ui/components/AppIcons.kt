@@ -79,6 +79,10 @@ object AppIcons {
     "m3 16 5-5 4 4 3-3 6 6",
     circle(15.5f, 8.5f, 1.5f),
   )
+  /** OCR: the page's text */
+  val TextIcon = icon("text", "M4 6V4h16v2", "M12 4v16", "M9 20h6")
+  val Gauge = icon("gauge", "M4 18a8 8 0 1 1 16 0", "m12 18 4-5", "M4 21h16")
+  val Clock = icon("clock", circle(12f, 12f, 9f), "M12 7v5l3 2")
   val Rotate = icon("rotate", "M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7")
   val Open = icon("open", "M14 4h6v6", "M20 4l-9 9", "M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5")
 }
