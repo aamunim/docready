@@ -1,5 +1,8 @@
 package com.docready.aamunim.ui.screens
 
+import com.docready.aamunim.ui.components.ScreenTitle
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -35,24 +38,26 @@ import com.docready.aamunim.ui.components.SectionLabel
  * on the phone without them.
  */
 @Composable
-fun AccountsScreen(onBack: () -> Unit, onFileNames: () -> Unit = {}) {
+fun AccountsScreen(onBack: (() -> Unit)?, onFileNames: () -> Unit = {}) {
   val context = LocalContext.current
   val version = try {
     context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
   } catch (_: Exception) {
     ""
   }
-  Scaffold(topBar = { DocTopBar("Accounts", onBack) }) { padding ->
+  Scaffold(topBar = { if (onBack != null) DocTopBar("Settings", onBack) }) { padding ->
     Column(
       Modifier
         .padding(padding)
         .fillMaxSize()
         .verticalScroll(rememberScrollState())
-        .padding(16.dp),
+        .padding(bottom = 16.dp),
       verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+      if (onBack == null) ScreenTitle("Settings", "Accounts, file names, privacy")
+      Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
       Text(
-        "Both are optional. Without them DocReady works fully on this phone.",
+        "Optional. Without it DocReady works fully on this phone.",
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
@@ -62,12 +67,6 @@ fun AccountsScreen(onBack: () -> Unit, onFileNames: () -> Unit = {}) {
         text = "Save ready files to your own Google Drive. DocReady will see only the files it puts there, " +
           "in a DocReady folder. No ITTC account needed.",
         button = "Connect Google Drive",
-      )
-      AccountCard(
-        icon = AppIcons.SignIn,
-        title = "ITTC account",
-        text = "For ITTC staff: the institute's steps and sizes, a lead's folder, upload to the ITTC Drive, links for students.",
-        button = "Sign in to ITTC",
       )
       SectionLabel("Settings")
       androidx.compose.material3.OutlinedButton(onClick = onFileNames, modifier = Modifier.fillMaxWidth()) { Text("File names") }
@@ -80,6 +79,7 @@ fun AccountsScreen(onBack: () -> Unit, onFileNames: () -> Unit = {}) {
       if (version.isNotEmpty()) {
         Text("DocReady $version", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
       }
+      }
     }
   }
 }
@@ -87,7 +87,7 @@ fun AccountsScreen(onBack: () -> Unit, onFileNames: () -> Unit = {}) {
 @Composable
 private fun AccountCard(icon: ImageVector, title: String, text: String, button: String) {
   Surface(
-    shape = RoundedCornerShape(16.dp),
+    shape = RoundedCornerShape(18.dp),
     color = MaterialTheme.colorScheme.surface,
     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
     modifier = Modifier.fillMaxWidth(),

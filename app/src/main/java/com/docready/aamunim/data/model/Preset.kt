@@ -74,6 +74,8 @@ data class SavedFile(
   val mime: String,
   val bytes: Long,
   val savedAt: Long,
+  /** Its item's limit when it was made for one (fits / close / too big), else null */
+  val maxKb: Int? = null,
 )
 
 /** A "folder": a named set of ready files on the phone (Downloads/DocReady/<name>/) */

@@ -99,7 +99,7 @@ private fun progress(s: Student, preset: Preset?): String? {
 private enum class StudentSort(val title: String) { RECENT("Recent"), NAME("Name") }
 
 @Composable
-fun StudentsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Unit) {
+fun StudentsScreen(onBack: (() -> Unit)?, onOpen: (String) -> Unit, onNew: () -> Unit) {
   val app = LocalContext.current.docReady
   val students by app.students.students.collectAsState()
   val presets by app.presets.presets.collectAsState()

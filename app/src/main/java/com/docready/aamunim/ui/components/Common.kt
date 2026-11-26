@@ -149,6 +149,24 @@ fun CircleIconButton(icon: ImageVector, description: String, onClick: () -> Unit
 /** How a file stands against its limit */
 enum class FitState { FITS, CLOSE, TOO_BIG, NONE }
 
+/** How [bytes] stand against a limit of [maxKb] (within 10 % of it: close) */
+fun fitState(bytes: Long, maxKb: Int?): FitState {
+  val limit = (maxKb ?: return FitState.NONE) * 1024L
+  return when {
+    bytes > limit -> FitState.TOO_BIG
+    bytes > limit * 0.9 -> FitState.CLOSE
+    else -> FitState.FITS
+  }
+}
+
+/** "Fits" / "Close" / "Too big", or null for no limit */
+fun fitLabel(s: FitState): String? = when (s) {
+  FitState.FITS -> "Fits"
+  FitState.CLOSE -> "Close"
+  FitState.TOO_BIG -> "Too big"
+  FitState.NONE -> null
+}
+
 /** "Fits" (green) / "Close" (amber) / "Too big" (red) / neutral, as a small pill */
 @Composable
 fun StatusBadge(text: String, state: FitState, modifier: Modifier = Modifier) {

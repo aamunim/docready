@@ -80,7 +80,7 @@ class PhoneSaveTarget(private val folders: FolderRepository) : SaveTarget {
         resolver.delete(uri, null, null)
         throw e
       }
-      out.add(SavedFile(name, uri.toString(), f.mime, f.file.length(), System.currentTimeMillis()))
+      out.add(SavedFile(name, uri.toString(), f.mime, f.file.length(), System.currentTimeMillis(), f.maxKb))
     }
   }
 
@@ -114,7 +114,7 @@ class PhoneSaveTarget(private val folders: FolderRepository) : SaveTarget {
       val target = File(dir, name)
       f.file.copyTo(target, overwrite = false)
       val uri: Uri = FileProvider.getUriForFile(context, context.packageName + ".fileprovider", target)
-      out.add(SavedFile(name, uri.toString(), f.mime, target.length(), System.currentTimeMillis()))
+      out.add(SavedFile(name, uri.toString(), f.mime, target.length(), System.currentTimeMillis(), f.maxKb))
     }
   }
 

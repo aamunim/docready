@@ -146,7 +146,7 @@ private fun rememberPresetImport(onImported: (Preset) -> Unit): () -> Unit {
 }
 
 @Composable
-fun PresetsScreen(onBack: () -> Unit, onOpen: (String) -> Unit, onNew: () -> Unit, onScanQr: () -> Unit = {}) {
+fun PresetsScreen(onBack: (() -> Unit)?, onOpen: (String) -> Unit, onNew: () -> Unit, onScanQr: () -> Unit = {}) {
   val repo = LocalContext.current.docReady.presets
   val presets by repo.presets.collectAsState()
   var query by rememberSaveable { mutableStateOf("") }

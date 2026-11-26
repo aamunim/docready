@@ -16,6 +16,15 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.docready.aamunim.data.model.ItemKind
+import com.docready.aamunim.ui.components.AppBottomBar
+import com.docready.aamunim.ui.components.AppIcons
+import com.docready.aamunim.ui.components.NavTab
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Scaffold
+import androidx.compose.ui.Modifier
+import androidx.navigation.compose.currentBackStackEntryAsState
 import com.docready.aamunim.intake.Intake
 import com.docready.aamunim.intake.IntakeTarget
 import com.docready.aamunim.ui.screens.AccountsScreen
@@ -23,6 +32,7 @@ import com.docready.aamunim.ui.screens.CheckSizeScreen
 import com.docready.aamunim.ui.screens.FileNamesScreen
 import com.docready.aamunim.ui.screens.FolderScreen
 import com.docready.aamunim.ui.screens.HomeScreen
+import com.docready.aamunim.ui.screens.SearchScreen
 import com.docready.aamunim.ui.screens.ItemChooserScreen
 import com.docready.aamunim.ui.screens.ItemUploadScreen
 import com.docready.aamunim.ui.screens.PdfMode
@@ -57,6 +67,7 @@ object Routes {
   const val ACCOUNTS = "accounts"
   const val FILE_NAMES = "file-names"
   const val FOLDER = "folder/{name}"
+  const val SEARCH = "search"
   const val PRESET_QR = "preset-qr/{id}"
   const val ITEM_ADD = "item-add?preset={preset}&item={item}&student={student}&draft={draft}"
   const val ITEM_CHOOSE = "item-choose"
@@ -109,6 +120,14 @@ private val draftArg get() = navArgument("draft") {
 
 private fun android.os.Bundle?.resume(): Boolean = this?.getString("draft") == "1"
 
+/** The bottom navigation's tabs, in order (a tab can be inserted, e.g. Folders second) */
+private val navTabs: List<NavTab> = listOf(
+  NavTab("home", Routes.HOME, "Home", AppIcons.Home),
+  NavTab("students", Routes.STUDENTS, "Students", AppIcons.People),
+  NavTab("presets", Routes.PRESETS, "Presets", AppIcons.PresetList),
+  NavTab("settings", Routes.ACCOUNTS, "Settings", AppIcons.Settings),
+)
+
 @Composable
 fun DocReadyApp() {
   val nav = rememberNavController()
@@ -116,8 +135,24 @@ fun DocReadyApp() {
   val back: () -> Unit = {
     if (nav.previousBackStackEntry != null) nav.popBackStack()
   }
+  val entry by nav.currentBackStackEntryAsState()
+  val current = entry?.destination?.route
+  val tabs = navTabs
+  val onTab = tabs.any { it.route == current }
+  val goTab: (NavTab) -> Unit = { t ->
+    nav.navigate(t.route) {
+      popUpTo(Routes.HOME) { saveState = true }
+      launchSingleTop = true
+      restoreState = true
+    }
+  }
+  fun studentArg(a: android.os.Bundle?): String? = a?.getString("student")
 
-  NavHost(navController = nav, startDestination = Routes.HOME) {
+  Scaffold(
+    bottomBar = { if (onTab) AppBottomBar(tabs, current, goTab) },
+    contentWindowInsets = WindowInsets(0, 0, 0, 0),
+  ) { inner ->
+  NavHost(navController = nav, startDestination = Routes.HOME, modifier = Modifier.padding(inner).consumeWindowInsets(inner)) {
     composable(Routes.HOME) {
       HomeScreen(
         onScan = { nav.navigate(Routes.tool("scan")) },
@@ -125,13 +160,14 @@ fun DocReadyApp() {
         onSignature = { nav.navigate(Routes.tool("signature")) },
         onPdfTools = { nav.navigate(Routes.tool("pdf")) },
         onSplit = { nav.navigate("split") },
-        onPresets = { nav.navigate(Routes.PRESETS) },
+        onPresets = { goTab(tabs.first { it.key == "presets" }) },
         onNewPreset = { nav.navigate(Routes.presetEdit("new")) },
         onPreset = { nav.navigate(Routes.preset(it)) },
         onFolder = { nav.navigate(Routes.folder(it)) },
-        onAccounts = { nav.navigate(Routes.ACCOUNTS) },
+        onAccounts = { goTab(tabs.first { it.key == "settings" }) },
         onStudents = { nav.navigate(Routes.STUDENTS) },
         onCheckSize = { nav.navigate(Routes.CHECK_SIZE) },
+        onSearch = { nav.navigate(Routes.SEARCH) },
         onDraft = { d ->
           // the tool brings its draft back at once ("scan", "pdf", "split" or "photo")
           nav.navigate(Routes.tool(if (d.tool == "pick") "item-add" else d.tool, d.presetId, d.itemIndex, d.studentId, draft = true))
@@ -140,15 +176,15 @@ fun DocReadyApp() {
     }
     composable(Routes.PHOTO, arguments = toolArgs) { entry ->
       val args = entry.arguments
-      PhotoScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }, studentId = args?.getString("student"), resume = args.resume())
+      PhotoScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }, studentId = studentArg(args), resume = args.resume())
     }
     composable(Routes.SIGNATURE, arguments = toolArgs) { entry ->
       val args = entry.arguments
-      SignatureScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }, studentId = args?.getString("student"))
+      SignatureScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }, studentId = studentArg(args))
     }
     composable(Routes.SCAN, arguments = toolArgs) { entry ->
       val args = entry.arguments
-      ScanScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }, studentId = args?.getString("student"), resume = args.resume())
+      ScanScreen(args?.getString("preset"), args?.getInt("item") ?: -1, back, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }, studentId = studentArg(args), resume = args.resume())
     }
     composable(Routes.PDF, arguments = toolArgs) { entry ->
       val args = entry.arguments
@@ -157,12 +193,12 @@ fun DocReadyApp() {
         onNewPreset = { nav.navigate(Routes.presetEdit("new")) },
         presetId = args?.getString("preset"),
         itemIndex = args?.getInt("item") ?: -1,
-        studentId = args?.getString("student"),
+        studentId = studentArg(args),
         resume = args.resume(),
       )
     }
     composable(Routes.STUDENTS) {
-      StudentsScreen(back, onOpen = { nav.navigate(Routes.student(it)) }, onNew = { nav.navigate(Routes.studentEdit("new")) })
+      StudentsScreen(null, onOpen = { nav.navigate(Routes.student(it)) }, onNew = { nav.navigate(Routes.studentEdit("new")) })
     }
     composable(Routes.STUDENT) { entry ->
       val id = entry.arguments?.getString("id") ?: ""
@@ -190,9 +226,12 @@ fun DocReadyApp() {
       PdfToolsScreen(back, startMode = PdfMode.SPLIT, onNewPreset = { nav.navigate(Routes.presetEdit("new")) }, resume = entry.arguments.resume())
     }
     composable(Routes.CHECK_SIZE) { CheckSizeScreen(back) }
+    composable(Routes.SEARCH) {
+      SearchScreen(back, onPreset = { nav.navigate(Routes.preset(it)) }, onStudent = { nav.navigate(Routes.student(it)) })
+    }
     composable(Routes.PRESETS) {
       PresetsScreen(
-        onBack = back,
+        onBack = null,
         onOpen = { nav.navigate(Routes.preset(it)) },
         onNew = { nav.navigate(Routes.presetEdit("new")) },
         onScanQr = { nav.navigate(Routes.PRESET_QR_SCAN) },
@@ -202,7 +241,7 @@ fun DocReadyApp() {
       val args = entry.arguments
       val presetId = args?.getString("preset")
       val item = args?.getInt("item") ?: -1
-      val student = args?.getString("student")
+      val student = studentArg(args)
       ItemUploadScreen(presetId, item, student, back, onHandOff = { tool ->
         // the picker gives way to the item's own tool (Back from it goes where Add was tapped)
         nav.popBackStack()
@@ -245,9 +284,10 @@ fun DocReadyApp() {
     composable(Routes.PRESET_EDIT) { entry ->
       PresetEditScreen(entry.arguments?.getString("id") ?: "new", onDone = back)
     }
-    composable(Routes.ACCOUNTS) { AccountsScreen(back, onFileNames = { nav.navigate(Routes.FILE_NAMES) }) }
+    composable(Routes.ACCOUNTS) { AccountsScreen(null, onFileNames = { nav.navigate(Routes.FILE_NAMES) }) }
     composable(Routes.FILE_NAMES) { FileNamesScreen(back) }
     composable(Routes.FOLDER) { entry -> FolderScreen(entry.arguments?.getString("name") ?: "", back) }
+  }
   }
 
   IntakeHandler(nav)
