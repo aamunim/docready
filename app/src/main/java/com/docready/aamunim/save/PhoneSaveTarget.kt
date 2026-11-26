@@ -49,7 +49,13 @@ class PhoneSaveTarget(private val tree: FolderTree) : SaveTarget {
         } else {
           saveToAppFolder(context, files, name, saved)
         }
-        if (record) tree.addSaved(name, saved, preset)
+        if (record) {
+          // a folder with Auto upload on: its new files go in the Drive queue
+          val recs = tree.addSaved(name, saved, preset)
+          if (recs.any { it.drive == com.docready.aamunim.data.DriveState.QUEUED } && com.docready.aamunim.drive.DriveAuth.account.value.connected) {
+            com.docready.aamunim.drive.DriveQueue.schedule(context)
+          }
+        }
         SaveOutcome.Saved(
           where = description(name),
           names = saved.map { it.name },

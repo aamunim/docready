@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
+import com.docready.aamunim.data.DriveState
 import java.util.UUID
 
 /**
@@ -76,6 +77,15 @@ class StudentRepository(
     left
   }
 
+  /** Any change to students' files (Google Drive states…); [change] returns the file as it is to be */
+  fun updateFiles(change: (Student, StudentFile) -> StudentFile) {
+    synchronized(lock) {
+      val list = _students.value
+      val next = list.map { s -> s.copy(files = s.files.map { f -> change(s, f) }) }
+      if (next != list) write(next)
+    }
+  }
+
   /** One file removed from the student (its app copy; the Downloads copy stays) */
   fun removeFile(id: String, f: StudentFile) {
     val s = get(id) ?: return
@@ -124,7 +134,12 @@ class StudentRepository(
       )
     }
     val fresh = get(id) ?: return@withContext outcome
-    save(fresh.copy(files = fresh.files + added, presetId = fresh.presetId ?: preset?.id))
+    // the student's folder has Auto upload on: the new files go in the Drive queue
+    val auto = "student:$id" in (context.applicationContext as com.docready.aamunim.DocReadyApplication).folderTree.data.value.autoUploadKeys &&
+      com.docready.aamunim.drive.DriveAuth.account.value.connected
+    val queued = if (auto) added.map { it.copy(drive = DriveState.QUEUED) } else added
+    save(fresh.copy(files = fresh.files + queued, presetId = fresh.presetId ?: preset?.id))
+    if (auto) com.docready.aamunim.drive.DriveQueue.schedule(context)
     outcome
   }
 

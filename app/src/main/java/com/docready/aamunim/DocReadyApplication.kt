@@ -6,7 +6,7 @@ import com.docready.aamunim.data.FolderRepository
 import com.docready.aamunim.data.PresetRepository
 import com.docready.aamunim.save.SaveTargets
 
-/** The app's few long-lived parts (no sign-in, no network in Phase 1) */
+/** The app's few long-lived parts (no sign-in; the network only for the optional Google Drive) */
 class DocReadyApplication : Application() {
   override fun onCreate() {
     super.onCreate()
@@ -14,6 +14,7 @@ class DocReadyApplication : Application() {
     com.docready.aamunim.imaging.Ocr.appContext = this
     // (the Folders tree starts reading its file in the background now: never on the main thread)
     folderTree
+    com.docready.aamunim.drive.DriveAuth.init(this)
   }
 
   val presets: PresetRepository by lazy { PresetRepository(this) }

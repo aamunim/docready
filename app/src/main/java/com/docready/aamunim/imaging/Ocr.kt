@@ -23,7 +23,7 @@ class OcrNotReady : IllegalStateException(Ocr.NOT_READY)
 /**
  * English (Latin script) text recognition with ML Kit through Google Play services: Play
  * fetches the model itself when the app is installed (manifest DEPENDENCIES "ocr"), so the app
- * stays small and has no network permission. Until the model is there, reading throws
+ * stays small (and needs no download of its own). Until the model is there, reading throws
  * [OcrNotReady] (and an urgent download is asked for).
  * Work per page is capped: the page is read at most [MAX_SIDE] px on its longer side. Suspends;
  * cancelling the caller (leaving the screen) stops waiting for it.
@@ -84,7 +84,7 @@ object Ocr {
 
   /**
    * The model fetched now rather than later (once per app run): Play services downloads it
-   * itself, the app needs no network permission for it. Errors are ignored (it comes anyway).
+   * itself. Errors are ignored (it comes anyway).
    */
   private fun askForModel(client: TextRecognizer) {
     val ctx = appContext ?: return

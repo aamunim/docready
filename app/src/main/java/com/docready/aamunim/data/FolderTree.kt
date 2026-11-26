@@ -60,6 +60,10 @@ data class FolderData(
   val lastFolderByPreset: Map<String, String> = emptyMap(),
   /** Google Drive folder ids, per local folder id */
   val driveFolders: Map<String, String> = emptyMap(),
+  /** "Also upload to Drive" in the save sheet, per preset (by name; "" = no preset) */
+  val driveByPreset: Map<String, Boolean> = emptyMap(),
+  /** Students' folders with Auto upload on ("student:<id>") */
+  val autoUploadKeys: Set<String> = emptySet(),
 )
 
 /**
@@ -271,6 +275,12 @@ class FolderTree(context: Context, private val legacy: FolderRepository) {
 
   /** Any change to the records (Drive states…) */
   fun updateFiles(change: (FileRecord) -> FileRecord) = change { d -> d.copy(files = d.files.map(change)) }
+
+  fun rememberDrive(preset: String?, on: Boolean) = change { it.copy(driveByPreset = it.driveByPreset + ((preset ?: "") to on)) }
+
+  fun driveFor(preset: String?): Boolean = _data.value.driveByPreset[preset ?: ""] ?: false
+
+  fun setAutoUploadKey(key: String, on: Boolean) = change { it.copy(autoUploadKeys = if (on) it.autoUploadKeys + key else it.autoUploadKeys - key) }
 
   fun setDriveFolder(localId: String, driveId: String?) = change { d ->
     d.copy(driveFolders = if (driveId == null) d.driveFolders - localId else d.driveFolders + (localId to driveId))
