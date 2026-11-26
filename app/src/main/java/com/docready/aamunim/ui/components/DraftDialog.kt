@@ -29,7 +29,7 @@ fun DraftOffer(host: DraftHost) {
     AlertDialog(
       onDismissRequest = {},
       title = { Text("An unfinished one is here") },
-      text = { Text("${d.title}\n${d.summary()}\n\nContinue it, or replace it with the pages you just chose?") },
+      text = { Text("${d.title}\n${d.summary()}\n\nContinue it, or replace it with the pages you just chose? If you continue it, the pages you just picked will be dropped.") },
       confirmButton = { Button(onClick = { host.replaceWithNew() }) { Text("Replace with the new pages") } },
       dismissButton = { TextButton(onClick = { host.keepUnfinished() }) { Text("Continue the unfinished one") } },
     )

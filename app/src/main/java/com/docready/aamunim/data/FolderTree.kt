@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
 import java.util.UUID
 
@@ -51,6 +52,8 @@ data class FileRecord(
 
 @Serializable
 data class FolderData(
+  /** Students' files once wrongly read in from the older list: removed (once) */
+  val studentLinksCleaned: Boolean = false,
   val folders: List<FolderNode> = emptyList(),
   val files: List<FileRecord> = emptyList(),
   /** The folder last chosen in the save sheet, per preset (by name; "" = no preset) */
@@ -101,9 +104,13 @@ object FolderLogic {
     return false
   }
 
-  /** A name not used by another folder in the same place ("Name (2)"…) */
+  /** Kept for the app at the top level: "Students" is where students' folders are */
+  const val RESERVED_TOP = "Students"
+
+  /** A name not used by another folder in the same place ("Name (2)"…); "Students" at the top is the app's */
   fun uniqueName(folders: List<FolderNode>, parentId: String?, name: String, exceptId: String? = null): String {
-    val taken = children(folders, parentId).filter { it.id != exceptId }.map { it.name.lowercase() }.toSet()
+    val taken = children(folders, parentId).filter { it.id != exceptId }.map { it.name.lowercase() }.toSet() +
+      (if (parentId == null) setOf(RESERVED_TOP.lowercase()) else emptySet())
     val base = sanitize(name)
     if (base.lowercase() !in taken) return base
     var n = 2
@@ -121,7 +128,7 @@ object FolderLogic {
       parent = if (found != null) {
         found.id
       } else {
-        val node = FolderNode(newId(), p, parent, createdAt = now, updatedAt = now)
+        val node = FolderNode(newId(), uniqueName(list, parent, p), parent, createdAt = now, updatedAt = now)
         list = list + node
         node.id
       }
@@ -176,9 +183,29 @@ object FolderLogic {
  */
 class FolderTree(context: Context, private val legacy: FolderRepository) {
   private val file = File(context.filesDir, "folders2.json")
+  private val backup = File(context.filesDir, "folders2.json.bak")
+  private val studentsFile = File(context.filesDir, "students.json")
   private val lock = Any()
-  private val _data = MutableStateFlow(load())
+  private val _data = MutableStateFlow(FolderData())
   val data: StateFlow<FolderData> = _data.asStateFlow()
+
+  /** Read from disk (in the background at app start: never on the main thread) */
+  private val _loaded = MutableStateFlow(false)
+  val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
+  private val ready = java.util.concurrent.CountDownLatch(1)
+
+  init {
+    Thread {
+      val d = try {
+        load()
+      } catch (_: Throwable) {
+        FolderData()
+      }
+      synchronized(lock) { _data.value = d }
+      _loaded.value = true
+      ready.countDown()
+    }.start()
+  }
 
   private fun newId() = UUID.randomUUID().toString()
 
@@ -188,6 +215,7 @@ class FolderTree(context: Context, private val legacy: FolderRepository) {
 
   /** The names already used for files in the folder at [path] (never two the same) */
   fun namesIn(path: String): Set<String> {
+    ready.await()
     val d = _data.value
     val id = idOfPath(d.folders, path) ?: return emptySet()
     return d.files.filter { it.folderId == id }.map { it.name }.toSet()
@@ -239,7 +267,7 @@ class FolderTree(context: Context, private val legacy: FolderRepository) {
 
   fun rememberFolder(preset: String?, folderId: String) = change { it.copy(lastFolderByPreset = it.lastFolderByPreset + ((preset ?: "") to folderId)) }
 
-  fun lastFolder(preset: String?): String? = _data.value.lastFolderByPreset[preset ?: ""]?.takeIf { id -> _data.value.folders.any { it.id == id } }
+  fun lastFolder(preset: String?): String? = ready.await().let { _data.value }.lastFolderByPreset[preset ?: ""]?.takeIf { id -> _data.value.folders.any { it.id == id } }
 
   /** Any change to the records (Drive states…) */
   fun updateFiles(change: (FileRecord) -> FileRecord) = change { d -> d.copy(files = d.files.map(change)) }
@@ -254,40 +282,100 @@ class FolderTree(context: Context, private val legacy: FolderRepository) {
     update { block(it) to Unit }
   }
 
-  private fun <T> update(block: (FolderData) -> Pair<FolderData, T>): T = synchronized(lock) {
-    val (d, r) = block(_data.value)
-    if (d != _data.value) {
-      try {
-        file.writeTextAtomic(AppJson.encodeToString(FolderData.serializer(), d))
-      } catch (_: Exception) {
-        // (kept in memory; written with the next change)
+  private fun <T> update(block: (FolderData) -> Pair<FolderData, T>): T {
+    // (a change waits for the tree to be read: never written over before)
+    ready.await()
+    return synchronized(lock) {
+      val (d, r) = block(_data.value)
+      if (d != _data.value) {
+        write(d)
+        _data.value = d
       }
-      _data.value = d
+      r
     }
-    r
   }
 
-  private fun load(): FolderData {
+  /** Written safely: the last good file kept as .bak first */
+  private fun write(d: FolderData) {
     try {
-      if (file.exists()) return AppJson.decodeFromString(FolderData.serializer(), file.readText())
+      if (file.exists()) file.copyTo(backup, overwrite = true)
+      file.writeTextAtomic(AppJson.encodeToString(FolderData.serializer(), d))
     } catch (_: Exception) {
-      // (a damaged file: made again from the older list below; that list is never changed)
+      // (kept in memory; written with the next change)
+    }
+  }
+
+  private fun read(f: File): FolderData? = try {
+    if (f.exists()) AppJson.decodeFromString(FolderData.serializer(), f.readText()) else null
+  } catch (_: Exception) {
+    null
+  }
+
+  /**
+   * The tree from its file, else from its backup; made from the older list only when neither
+   * file exists (a damaged file never starts the tree again from scratch)
+   */
+  private fun load(): FolderData {
+    val d = read(file) ?: read(backup)
+    if (d != null) return cleanStudentLinks(d)
+    if (file.exists() || backup.exists()) {
+      // (both damaged: kept aside, and an empty tree; nothing older is read over them)
+      try {
+        file.copyTo(File(file.path + ".broken"), overwrite = true)
+      } catch (_: Exception) {
+      }
+      return FolderData(studentLinksCleaned = true)
     }
     return migrate()
   }
 
-  /** Once: the older folders (folders.json) as top-level folders with their files */
+  /** Students' files in Downloads (their links): the student's own folder lists them */
+  private fun studentLinks(): Set<String> = try {
+    if (studentsFile.exists()) {
+      AppJson.decodeFromString(ListSerializer(com.docready.aamunim.data.model.Student.serializer()), studentsFile.readText())
+        .flatMap { s -> s.files.mapNotNull { it.downloadsUri } }.toSet()
+    } else {
+      emptySet()
+    }
+  } catch (_: Exception) {
+    emptySet()
+  }
+
+  /**
+   * Once, for trees made by an earlier version: records of students' files (read in from the
+   * older list) removed, and folders left empty by that removed — so no file shows twice, and
+   * deleting from a folder never touches a student's checklist file
+   */
+  private fun cleanStudentLinks(d: FolderData): FolderData {
+    if (d.studentLinksCleaned) return d
+    val links = studentLinks()
+    val gone = d.files.filter { it.uri in links }
+    val emptied = gone.map { it.folderId }.toSet()
+    val files = d.files - gone.toSet()
+    val folders = d.folders.filter { f ->
+      f.id !in emptied || files.any { it.folderId == f.id } || d.folders.any { it.parentId == f.id }
+    }
+    val cleaned = d.copy(folders = folders, files = files, studentLinksCleaned = true)
+    write(cleaned)
+    return cleaned
+  }
+
+  /** Once: the older folders (folders.json) as top-level folders with their files (not students') */
   private fun migrate(): FolderData {
-    var d = FolderData()
+    var d = FolderData(studentLinksCleaned = true)
+    val links = studentLinks()
     try {
       for (old in legacy.folders.value.asReversed()) {
+        // (a student's files are their own folder: never read in twice)
+        val files = old.files.filter { it.uri !in links }
+        if (files.isEmpty()) continue
         val (folders, id) = FolderLogic.ensurePath(d.folders, old.name, old.updatedAt, ::newId)
         d = d.copy(
           folders = folders,
-          files = d.files + old.files.map { FileRecord(newId(), id, it.name, it.uri, it.mime, it.bytes, it.savedAt, it.maxKb) },
+          files = d.files + files.map { FileRecord(newId(), id, it.name, it.uri, it.mime, it.bytes, it.savedAt, it.maxKb) },
         )
       }
-      file.writeTextAtomic(AppJson.encodeToString(FolderData.serializer(), d))
+      write(d)
     } catch (_: Exception) {
       // (nothing is lost: the older list stays readable, and this is tried again next start)
     }

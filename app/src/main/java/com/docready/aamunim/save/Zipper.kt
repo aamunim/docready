@@ -40,14 +40,22 @@ object Zipper {
    * Files read from wherever they are (Downloads links, the app's copies) streamed into one ZIP,
    * one at a time. [entries]: each file's name and how to open it. Blocking.
    */
-  fun zipStreams(context: Context, entries: List<Pair<String, () -> java.io.InputStream?>>, zipBase: String): ReadyFile {
+  /** A ZIP made from links: the file, and how many could not be read (left out) */
+  class Streamed(val zip: ReadyFile, val skipped: Int)
+
+  fun zipStreams(context: Context, entries: List<Pair<String, () -> java.io.InputStream?>>, zipBase: String): Streamed {
+    var skipped = 0
     val name = "${FileNames.safeFolder(zipBase).replace(' ', '_')}.zip"
     val out = FileNames.outputFile(context, name)
     val used = mutableSetOf<String>()
     ZipOutputStream(BufferedOutputStream(FileOutputStream(out))).use { zip ->
       val buf = ByteArray(64 * 1024)
       for ((fileName, open) in entries) {
-        val input = open() ?: continue
+        val input = open()
+        if (input == null) {
+          skipped++
+          continue
+        }
         val dot = fileName.lastIndexOf('.')
         val entry = FileNames.unique(if (dot > 0) fileName.substring(0, dot) else fileName, if (dot > 0) fileName.substring(dot + 1) else "bin", used)
         used.add(entry)
@@ -62,6 +70,6 @@ object Zipper {
         zip.closeEntry()
       }
     }
-    return ReadyFile(out, name, MIME)
+    return Streamed(ReadyFile(out, name, MIME), skipped)
   }
 }

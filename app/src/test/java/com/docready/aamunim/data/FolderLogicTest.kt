@@ -45,6 +45,17 @@ class FolderLogicTest {
   }
 
   @Test
+  fun studentsIsTheAppsAtTheTop() {
+    val f = FolderLogic.create(emptyList(), null, "Students", 0, "a")
+    assertEquals("Students (2)", f.single().name)
+    // inside another folder the name is free
+    val g = FolderLogic.create(f, "a", "Students", 0, "b")
+    assertEquals("Students", g.first { it.id == "b" }.name)
+    val (h, id) = FolderLogic.ensurePath(emptyList(), "students/Batch", 0, ::id)
+    assertEquals("students (2)/Batch", FolderLogic.pathOf(h, id))
+  }
+
+  @Test
   fun movesNeverMakeCycles() {
     val (f1, child) = FolderLogic.ensurePath(emptyList(), "A/B/C", 0, ::id)
     val a = f1.first { it.name == "A" }.id
@@ -68,7 +79,7 @@ class FolderLogicTest {
     val (f1, inner) = FolderLogic.ensurePath(emptyList(), "A/B", 0, ::id)
     val a = f1.first { it.name == "A" }.id
     val rec = { fid: String, name: String -> FileRecord(name, fid, name, "content://x/$name", "application/pdf", 10, 0) }
-    val data = FolderData(f1, listOf(rec(a, "one"), rec(inner, "two")))
+    val data = FolderData(folders = f1, files = listOf(rec(a, "one"), rec(inner, "two")))
     val (kept, none) = FolderLogic.delete(data, a, keepFiles = true, now = 0, newId = ::id)
     assertTrue(none.isEmpty())
     assertEquals(listOf(FolderLogic.SCANS), kept.folders.map { it.name })

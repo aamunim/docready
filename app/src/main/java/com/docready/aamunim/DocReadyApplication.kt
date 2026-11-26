@@ -12,6 +12,8 @@ class DocReadyApplication : Application() {
     super.onCreate()
     // (text reading may ask Play services for its model)
     com.docready.aamunim.imaging.Ocr.appContext = this
+    // (the Folders tree starts reading its file in the background now: never on the main thread)
+    folderTree
   }
 
   val presets: PresetRepository by lazy { PresetRepository(this) }

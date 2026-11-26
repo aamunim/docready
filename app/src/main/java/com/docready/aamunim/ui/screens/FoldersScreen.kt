@@ -155,6 +155,7 @@ fun FoldersScreen(onOpen: (String) -> Unit) {
   val app = context.docReady
   val tree = app.folderTree
   val data by tree.data.collectAsState()
+  val loaded by tree.loaded.collectAsState()
   val students by app.students.students.collectAsState()
   val presets by app.presets.presets.collectAsState()
   var sort by rememberSaveable { mutableStateOf(FolderSort.NAME) }
@@ -220,6 +221,10 @@ fun FoldersScreen(onOpen: (String) -> Unit) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           for (c in FolderChip.entries) FilterChip(selected = chip == c, onClick = { chip = c }, label = { Text(c.title) })
         }
+      }
+      if (!loaded) {
+        item(span = { full }) { com.docready.aamunim.ui.components.BusyRow("Reading your folders…") }
+        return@LazyVerticalGrid
       }
       item(span = { full }) { StorageCard(everything) }
 
@@ -501,13 +506,45 @@ fun FolderOpenScreen(key: String, onBack: () -> Unit, onOpen: (String) -> Unit, 
   }.sortedByDescending { it.savedAt }
   val chosen = files.filter { it.key in selected }
 
+  // files Android asks the user about before deleting (no longer the app's own)
+  val askDelete = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { res ->
+    if (res.resultCode != android.app.Activity.RESULT_OK) {
+      Toast.makeText(context, "Some files were left in Downloads.", Toast.LENGTH_LONG).show()
+    }
+  }
+
+  /** Deleted from Downloads (blocking); the links Android asks the user about, and how many failed */
+  fun deleteLinks(links: List<String>): Pair<List<String>, Int> {
+    val ask = ArrayList<String>()
+    var failed = 0
+    for (l in links) {
+      when (DownloadsFiles.deleteFile(context, l)) {
+        DownloadsFiles.Deleted.NEEDS_USER -> ask.add(l)
+        DownloadsFiles.Deleted.FAILED -> failed++
+        else -> Unit
+      }
+    }
+    return ask to failed
+  }
+
+  /** What deleting left: the system's question for some, a word for the rest */
+  fun afterDelete(ask: List<String>, failed: Int) {
+    val request = DownloadsFiles.deleteRequest(context, ask)
+    val left = failed + if (request == null) ask.size else 0
+    if (request != null) askDelete.launch(androidx.activity.result.IntentSenderRequest.Builder(request.intentSender).build())
+    if (left > 0) Toast.makeText(context, "$left file${if (left == 1) "" else "s"} in Downloads couldn't be removed; delete ${if (left == 1) "it" else "them"} in the Files app.", Toast.LENGTH_LONG).show()
+  }
+
   fun shareZip(list: List<FolderFile>, base: String) {
     if (list.isEmpty()) return
     busy = "Making the ZIP…"
     scope.launch {
       try {
-        val zip = withContext(Dispatchers.IO) { Zipper.zipStreams(context, list.map { f -> f.name to { f.open(context) } }, base) }
-        app.saveTargets.share.save(context, listOf(zip), title)
+        val made = withContext(Dispatchers.IO) { Zipper.zipStreams(context, list.map { f -> f.name to { f.open(context) } }, base) }
+        if (made.skipped > 0) {
+          Toast.makeText(context, "${made.skipped} file${if (made.skipped == 1) "" else "s"} couldn't be added (no longer on the phone).", Toast.LENGTH_LONG).show()
+        }
+        if (made.skipped < list.size) app.saveTargets.share.save(context, listOf(made.zip), title)
       } catch (e: Throwable) {
         Toast.makeText(context, e.message ?: "The ZIP could not be made.", Toast.LENGTH_LONG).show()
       } finally {
@@ -740,17 +777,14 @@ fun FolderOpenScreen(key: String, onBack: () -> Unit, onOpen: (String) -> Unit, 
           val list = chosen.toList()
           selected.clear()
           scope.launch {
-            val left = withContext(Dispatchers.IO) {
-              var left = 0
-              for (f in list) {
-                val link = f.record?.uri ?: f.student?.second?.downloadsUri
-                if (alsoDownloads && link != null && !DownloadsFiles.delete(context, link)) left++
-                f.student?.let { (sid, sf) -> app.students.removeFile(sid, sf) }
-              }
+            val (ask, failed) = withContext(Dispatchers.IO) {
+              val links = if (alsoDownloads) list.mapNotNull { it.record?.uri ?: it.student?.second?.downloadsUri } else emptyList()
+              val r = deleteLinks(links)
+              for (f in list) f.student?.let { (sid, sf) -> app.students.removeFile(sid, sf) }
               tree.removeFiles(list.mapNotNull { it.record?.id }.toSet())
-              left
+              r
             }
-            if (left > 0) Toast.makeText(context, "$left file${if (left == 1) "" else "s"} in Downloads couldn't be removed; delete ${if (left == 1) "it" else "them"} in the Files app.", Toast.LENGTH_LONG).show()
+            afterDelete(ask, failed)
           }
         }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
       },
@@ -780,11 +814,11 @@ fun FolderOpenScreen(key: String, onBack: () -> Unit, onOpen: (String) -> Unit, 
           deletingFolder = false
           val del = deleteFiles
           scope.launch {
-            val left = withContext(Dispatchers.IO) {
+            val (ask, failed) = withContext(Dispatchers.IO) {
               val removed = tree.deleteFolder(folder.id, keepFiles = !del)
-              removed.count { !DownloadsFiles.delete(context, it.uri) }
+              deleteLinks(removed.map { it.uri })
             }
-            if (left > 0) Toast.makeText(context, "$left file${if (left == 1) "" else "s"} in Downloads couldn't be removed; delete ${if (left == 1) "it" else "them"} in the Files app.", Toast.LENGTH_LONG).show()
+            afterDelete(ask, failed)
             onBack()
           }
         }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
