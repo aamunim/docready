@@ -57,6 +57,15 @@ phone, with no sign-in:
 - **File names** (Accounts → File names): a pattern from `{name}` `{roll}` `{item}`
   `{preset}` `{date}` `{seq}`, a date format and a separator; Bangla names can be written in
   Latin letters ("রহিম উদ্দিন" → `Rahim_Uddin`). A preset can have its own pattern.
+- **Add to a preset item** (the preset's page, or a student's checklist: "Add"): any files in —
+  the scanner, gallery photos, PDFs and pictures from Files, or a share ("Use for a preset
+  item…"); every PDF page and picture is one page (up to 150). When more pages came in than the
+  item takes (1 page unless the preset says "Exactly N" / "Up to N" / "Any"), a page picker asks
+  which, in order (numbered; hold for a large view; "Looks like <item>?" from the same signs as
+  Split's suggestions, never chosen by itself); pages are never merged beyond the limit. The
+  chosen pages go to the item's own tool: Photo (face found and cut out, background, size, KB),
+  Signature (cut, clean, size, KB) or Scan for a document (page editor; a PDF's pages keep their
+  look), so the file always follows the item's rules; from a student it is added to them.
 - **Students**: each applicant's name (any script), roll / registration, date of birth, notes
   and form preset. Their page is a checklist of the preset's items (done / missing / too big):
   tap an item to open the right tool for it, and "Add to <name>" puts the result in the

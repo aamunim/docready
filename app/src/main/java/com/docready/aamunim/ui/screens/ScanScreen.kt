@@ -59,6 +59,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.docready.aamunim.data.FileNames
+import com.docready.aamunim.intake.Handoff
+import com.docready.aamunim.intake.HandoffPage
+import com.docready.aamunim.intake.PageKind
 import com.docready.aamunim.data.Draft
 import com.docready.aamunim.data.DraftHost
 import com.docready.aamunim.data.DraftPage
@@ -175,24 +178,29 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
   private var animKey = 0
 
   /** The scanner's pages, copied in (they are added after the pages already there) */
-  fun addScanned(uris: List<Uri>) = addPages(uris, photos = false)
+  fun addScanned(uris: List<Uri>) = addPages(uris.take(30).map { u -> { FileNames.copyIn(ctx, u, "jpg") } to PageKind.SCANNED })
 
   /** Photos of papers added as pages: their corners are looked for, to be checked by the user */
-  fun addPhotos(uris: List<Uri>) = addPages(uris, photos = true)
+  fun addPhotos(uris: List<Uri>) = addPages(uris.take(30).map { u -> { FileNames.copyIn(ctx, u, "img") } to PageKind.PHOTO })
 
-  private fun addPages(uris: List<Uri>, photos: Boolean) {
-    if (uris.isEmpty()) return
+  /** Pages chosen for this item in the page picker (a PDF's pages keep their own look) */
+  fun addHandedOver(list: List<HandoffPage>) = addPages(list.map { p -> { p.file } to p.kind })
+
+  private fun addPages(items: List<Pair<() -> File, PageKind>>) {
+    if (items.isEmpty()) return
     viewModelScope.launch {
       busy = "Reading the pages…"
       error = null
       result = null
-      val list = uris.take(30)
+      val list = items.take(PdfTools.PAGE_LIMIT)
       val animated = animationsEnabled(ctx)
       try {
-        for ((n, u) in list.withIndex()) {
+        for ((n, item) in list.withIndex()) {
+          val (fileOf, kind) = item
+          val photos = kind == PageKind.PHOTO
           // the raw page first: the scanning animation sweeps over it while it is cleaned
           val (f, raw) = withContext(Dispatchers.Default) {
-            val file = FileNames.copyIn(ctx, u, if (photos) "img" else "jpg")
+            val file = fileOf()
             file to DocTools.load(ctx, Uri.fromFile(file), PREVIEW).asImageBitmap()
           }
           val label = if (list.size == 1) "Cleaning the page…" else "Cleaning page ${n + 1} of ${list.size}…"
@@ -208,10 +216,14 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
             } else {
               null
             }
-            // new document pages: Magic (and the paper's corners on a photo)
-            val framed = PageRecipe.Document.copy(quad = quad?.toList())
-            // fingers holding the paper: painted out by default where found (never over a face)
-            val recipe = PageRenderer.withFingers(framed, fingersOn(f, framed))
+            // new document pages: Magic (and the paper's corners on a photo); a PDF's page as it was
+            val recipe = if (kind == PageKind.PDF) {
+              PageRecipe.Plain
+            } else {
+              val framed = PageRecipe.Document.copy(quad = quad?.toList())
+              // fingers holding the paper: painted out by default where found (never over a face)
+              PageRenderer.withFingers(framed, fingersOn(f, framed))
+            }
             // the real result, small: the animation's reveal and the page's tile
             val shown = PageRenderer.render(DocTools.load(ctx, Uri.fromFile(f), PREVIEW), recipe)
             val tile = DocTools.scaleToMax(shown.copy(Bitmap.Config.ARGB_8888, false), 240).asImageBitmap()
@@ -475,7 +487,14 @@ class ScanViewModel(app: Application, private val presetId: String?, private val
   }
 
   init {
-    draft.begin(resume)
+    // pages chosen for this item in the page picker: a fresh start (an older draft is replaced)
+    val handed = Handoff.take(draft.key)
+    if (handed != null) {
+      draft.beginFresh()
+      addHandedOver(handed)
+    } else {
+      draft.begin(resume)
+    }
   }
 
   override fun onCleared() {

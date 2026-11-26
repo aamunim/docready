@@ -396,6 +396,8 @@ private fun ChecklistRow(s: Student, index: Int, item: com.docready.aamunim.data
             OutlinedButton(onClick = { onMake("pdf") }) { Text("From PDF / photos") }
           }
         }
+        // any files (scan, gallery, PDFs): pages picked if more than the item takes
+        OutlinedButton(onClick = { onMake("item-add") }) { Text("Add") }
       }
     }
   }

@@ -334,6 +334,17 @@ class DraftHost(
     }
   }
 
+  /** A fresh start (pages handed over for this item): any older draft here is replaced */
+  fun beginFresh() {
+    scope.launch {
+      try {
+        repo.discard(key)
+      } catch (_: Exception) {
+      }
+      keeper.start()
+    }
+  }
+
   private suspend fun bringBack(d: Draft) {
     val ok = try {
       restore(d)

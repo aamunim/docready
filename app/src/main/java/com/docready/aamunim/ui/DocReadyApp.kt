@@ -23,6 +23,8 @@ import com.docready.aamunim.ui.screens.CheckSizeScreen
 import com.docready.aamunim.ui.screens.FileNamesScreen
 import com.docready.aamunim.ui.screens.FolderScreen
 import com.docready.aamunim.ui.screens.HomeScreen
+import com.docready.aamunim.ui.screens.ItemChooserScreen
+import com.docready.aamunim.ui.screens.ItemUploadScreen
 import com.docready.aamunim.ui.screens.PdfMode
 import com.docready.aamunim.ui.screens.PdfToolsScreen
 import com.docready.aamunim.ui.screens.PhotoScreen
@@ -56,6 +58,8 @@ object Routes {
   const val FILE_NAMES = "file-names"
   const val FOLDER = "folder/{name}"
   const val PRESET_QR = "preset-qr/{id}"
+  const val ITEM_ADD = "item-add?preset={preset}&item={item}&student={student}&draft={draft}"
+  const val ITEM_CHOOSE = "item-choose"
   const val PRESET_QR_SCAN = "preset-qr-scan"
 
   fun presetQr(id: String) = "preset-qr/${Uri.encode(id)}"
@@ -130,7 +134,7 @@ fun DocReadyApp() {
         onCheckSize = { nav.navigate(Routes.CHECK_SIZE) },
         onDraft = { d ->
           // the tool brings its draft back at once ("scan", "pdf", "split" or "photo")
-          nav.navigate(Routes.tool(d.tool, d.presetId, d.itemIndex, d.studentId, draft = true))
+          nav.navigate(Routes.tool(if (d.tool == "pick") "item-add" else d.tool, d.presetId, d.itemIndex, d.studentId, draft = true))
         },
       )
     }
@@ -194,6 +198,23 @@ fun DocReadyApp() {
         onScanQr = { nav.navigate(Routes.PRESET_QR_SCAN) },
       )
     }
+    composable(Routes.ITEM_ADD, arguments = toolArgs) { entry ->
+      val args = entry.arguments
+      val presetId = args?.getString("preset")
+      val item = args?.getInt("item") ?: -1
+      val student = args?.getString("student")
+      ItemUploadScreen(presetId, item, student, back, onHandOff = { tool ->
+        // the picker gives way to the item's own tool (Back from it goes where Add was tapped)
+        nav.popBackStack()
+        nav.navigate(Routes.tool(tool, presetId, item, student))
+      }, resume = args.resume())
+    }
+    composable(Routes.ITEM_CHOOSE) {
+      ItemChooserScreen(back) { presetId, i ->
+        nav.popBackStack()
+        nav.navigate(Routes.tool("item-add", presetId, i))
+      }
+    }
     composable(Routes.PRESET_QR) { entry -> PresetQrScreen(entry.arguments?.getString("id") ?: "", back) }
     composable(Routes.PRESET_QR_SCAN) {
       PresetQrImportScreen(back, onImported = { id ->
@@ -215,6 +236,7 @@ fun DocReadyApp() {
         },
         onEdit = { nav.navigate(Routes.presetEdit(it)) },
         onShowQr = { nav.navigate(Routes.presetQr(it)) },
+        onAdd = { presetId, i -> nav.navigate(Routes.tool("item-add", presetId, i)) },
       )
     }
     composable(Routes.PRESET_EDIT) { entry ->
@@ -239,6 +261,7 @@ private fun IntakeHandler(nav: NavHostController) {
       IntakeTarget.SPLIT -> nav.navigate("split") { launchSingleTop = true }
       IntakeTarget.PHOTO -> nav.navigate(Routes.tool("photo")) { launchSingleTop = true }
       IntakeTarget.SIGNATURE -> nav.navigate(Routes.tool("signature")) { launchSingleTop = true }
+      IntakeTarget.ITEM -> nav.navigate(Routes.ITEM_CHOOSE) { launchSingleTop = true }
       null -> Unit
     }
   }
@@ -260,6 +283,7 @@ private fun IntakeHandler(nav: NavHostController) {
               TextButton(onClick = { Intake.choose(IntakeTarget.SPLIT) }) { Text("Split by preset (each paper of a form)") }
             }
             TextButton(onClick = { Intake.choose(IntakeTarget.PDF_TOOLS) }) { Text("PDF tools (merge, compress, NID)") }
+            TextButton(onClick = { Intake.choose(IntakeTarget.ITEM) }) { Text("Use for a preset item…") }
           }
         }
       },

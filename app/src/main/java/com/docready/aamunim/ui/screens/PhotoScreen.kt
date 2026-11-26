@@ -1,6 +1,7 @@
 package com.docready.aamunim.ui.screens
 
 import com.docready.aamunim.data.Draft
+import com.docready.aamunim.intake.Handoff
 import com.docready.aamunim.data.DraftHost
 import com.docready.aamunim.data.DraftPage
 import com.docready.aamunim.data.DraftRepository
@@ -517,7 +518,14 @@ class PhotoViewModel(app: Application, private val presetId: String?, private va
   }
 
   init {
-    draft.begin(resume)
+    // a page chosen for this item in the page picker: a fresh start (an older draft is replaced)
+    val handed = Handoff.take(draft.key)?.firstOrNull()
+    if (handed != null) {
+      draft.beginFresh()
+      setSourceFile(handed.file)
+    } else {
+      draft.begin(resume)
+    }
   }
 
   override fun onCleared() {

@@ -292,6 +292,7 @@ fun PresetDetailScreen(
   onMake: (Preset, Int) -> Unit,
   onEdit: (String) -> Unit,
   onShowQr: (String) -> Unit = {},
+  onAdd: (presetId: String, index: Int) -> Unit = { _, _ -> },
 ) {
   val context = LocalContext.current
   val repo = context.docReady.presets
@@ -362,7 +363,11 @@ fun PresetDetailScreen(
                 }
                 Text(item.summary(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
               }
-              Button(onClick = { onMake(preset, i) }) { Text("Make") }
+              Column(horizontalAlignment = Alignment.End) {
+                Button(onClick = { onMake(preset, i) }) { Text("Make") }
+                // any files (scan, gallery, PDFs): pages picked if more than the item takes
+                OutlinedButton(onClick = { onAdd(preset.id, i) }) { Text("Add") }
+              }
             }
           }
         }
